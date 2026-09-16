@@ -1,0 +1,78 @@
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+#caption {
+  position: absolute;
+  left: 3%;
+  right: 3%;
+  bottom: 8%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  color: #fff;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  text-shadow:
+    0 0 8px #000,
+    0 2px 4px #000,
+    0 0 2px #000;
+}
+#committed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Máximo de duas linhas no telão, em qualquer combinação. */
+#committed,
+#live {
+  font-size: 2.9vw;
+}
+#committed {
+  -webkit-line-clamp: 2;
+}
+/* A linha viva é ancorada pelo FIM: quando a frase passa do espaço, o começo sai
+   por cima e as palavras novas continuam visíveis (senão o telão parece travado). */
+#live {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  max-height: calc(2 * 1.25em);
+}
+#live-text {
+  flex-shrink: 0;
+}
+/* Frase fechada em cima + frase viva embaixo: uma linha cada. */
+#caption.has-live #committed {
+  opacity: 0.8;
+  -webkit-line-clamp: 1;
+}
+#caption.has-live #live {
+  max-height: calc(1 * 1.25em);
+}
+/* A frase viva cresceu além de uma linha: a fechada sai para não cortar o fim da viva. */
+#caption.live-long #committed {
+  display: none;
+}
+#caption.live-long #live {
+  max-height: calc(2 * 1.25em);
+}
+/* Só a cauda da linha viva muda entre drafts; ela entra suave em vez de piscar. */
+#live .grow {
+  animation: grow-in 220ms ease-out;
+}
+@keyframes grow-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

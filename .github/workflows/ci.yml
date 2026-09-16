@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Check deploy script syntax
+        run: |
+          bash -n deploy.sh
+          shellcheck deploy.sh
+
+      - name: Create sanitized deployment environment
+        run: |
+          cat > .env <<'EOF'
+          DOMAIN=localhost
+          ADMIN_PASSWORD=test-admin-password-at-least-16
+          SESSION_SECRET=test-session-secret-at-least-32-characters
+          DEEPGRAM_API_KEY=test-deepgram-key
+          OPENAI_API_KEY=test-openai-key
+          ROOMS=room-1
+          TOKEN_ROOM_1=test-room-token-at-least-16
+          EOF
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm \
+            -e DOMAIN=localhost \
+            -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Build production image
+        run: docker build -t pgconf-livecaptions:ci .
+
+      - name: Validate application configuration
+        run: |
+          docker run --rm --env-file .env \
+            pgconf-livecaptions:ci node dist/check-config.js
+
+      - name: Smoke test production image
+        run: |
+          set -euo pipefail
+          container="$(docker run -d --rm \
+            --name pgconf-livecaptions-ci \
+            -p 127.0.0.1:13000:3000 \
+            --env-file .env \
+            pgconf-livecaptions:ci)"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:13000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1

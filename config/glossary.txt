@@ -1,0 +1,27 @@
+# Dicas de domínio para o tradutor. Formato: palavra: orientação (em inglês, é o que o modelo lê).
+# Só entram no prompt quando a palavra aparece na frase. Reinicie o app após editar.
+banco: short for "banco de dados", translate as "database"; use "bank" only if the sentence is clearly about a financial institution
+bancos: usually "databases"; "banks" only if clearly financial institutions
+base: usually "database" (base de dados), not "base"
+tabela: "table" (database table)
+índice: "index" (database index), plural "indexes"
+consulta: "query"
+chave: "key" (primary key, foreign key)
+gatilho: "trigger"
+réplica: "replica" (standby server)
+primário: "primary" (the primary server)
+particionamento: "partitioning"
+travamento: "lock" or "locking"
+bloqueio: "lock"
+bloat: keep as "bloat"
+vácuo: "VACUUM" (the Postgres command)
+extensão: "extension" (Postgres extension)
+esquema: "schema"
+migração: "migration"
+schema: keep as "schema"
+query: keep as "query"
+database: "banco de dados" (or "banco" when speech is informal)
+table: "tabela"
+index: "índice"; plural "índices"
+lock: "lock" (keep in English, common in Brazilian tech speech)
+trigger: "trigger" (keep in English)

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Captura — legendas ao vivo</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Captura de áudio</h1>
+      <p class="hint">Chrome → escolher o áudio da mesa → Iniciar → copiar overlay no OBS.</p>
+
+      <label>
+        Microfone / mesa
+        <select id="device"></select>
+      </label>
+      <label>
+        Direção
+        <select id="direction">
+          <option value="en-pt">Inglês → Português</option>
+          <option value="pt-en">Português → Inglês</option>
+        </select>
+      </label>
+
+      <div class="row">
+        <button id="start" type="button">Iniciar</button>
+        <button id="stop" type="button" disabled>Parar</button>
+        <button id="copy" type="button">Copiar URL do overlay</button>
+      </div>
+
+      <ul class="status">
+        <li>Mic: <span id="st-mic">parado</span></li>
+        <li>Deepgram: <span id="st-dg">offline</span></li>
+        <li>Servidor: <span id="st-ws">offline</span></li>
+        <li>Overlay: <span id="st-ov">—</span></li>
+      </ul>
+      <p id="last" class="last"></p>
+    </main>
+    <script src="/static/capture.js" type="module"></script>
+  </body>
+</html>

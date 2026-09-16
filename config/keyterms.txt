@@ -1,0 +1,70 @@
+PostgreSQL
+Postgres
+psql
+pgBouncer
+pgBackRest
+pg_dump
+pg_restore
+pg_basebackup
+pg_stat_statements
+WAL
+write-ahead log
+checkpoint
+autovacuum
+vacuum
+MVCC
+TOAST
+replication slot
+logical replication
+streaming replication
+synchronous replication
+hot standby
+EXPLAIN ANALYZE
+query planner
+B-tree
+GIN
+GiST
+BRIN
+partitioning
+connection pooling
+PostGIS
+TimescaleDB
+Citus
+Patroni
+pgvector
+JSONB
+CTE
+window function
+tablespace
+tablespaces
+WAL-G
+Barman
+etcd
+HAProxy
+pgpool
+PgCat
+PgDog
+PGConf
+PGDay
+Consul
+Kubernetes
+CloudNativePG
+Zalando
+Spilo
+Prometheus
+Grafana
+pgbench
+pg_upgrade
+pgAdmin
+failover
+switchover
+standby
+primary
+Odyssey
+Debezium
+Kafka
+Airflow
+dbt
+Redis
+Ansible
+Terraform

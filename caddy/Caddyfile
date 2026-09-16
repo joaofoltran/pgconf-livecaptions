@@ -1,0 +1,12 @@
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "microphone=(self)"
+	}
+	reverse_proxy app:3000 {
+		flush_interval -1
+	}
+}

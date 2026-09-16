@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin — legendas</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Admin</h1>
+      <form id="login">
+        <label>
+          Senha
+          <input type="password" name="password" autocomplete="current-password" />
+        </label>
+        <button type="submit">Entrar</button>
+      </form>
+      <div id="dash" hidden>
+        <p><button id="logout" type="button">Sair</button></p>
+        <div id="rooms"></div>
+      </div>
+    </main>
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

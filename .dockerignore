@@ -1,0 +1,13 @@
+node_modules
+.git
+.github
+.env*
+caddy_data
+caddy_config
+coverage
+dist
+docs
+test
+test-audio
+*.md
+deploy.sh
