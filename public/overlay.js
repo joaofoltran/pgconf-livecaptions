@@ -8,7 +8,7 @@ const committedEl = document.getElementById("committed");
 const liveEl = document.getElementById("live");
 const liveTextEl = document.getElementById("live-text");
 
-// Estilo TV: a frase fechada fica na faixa de cima enquanto a atual se forma embaixo.
+// TV style: the finalized sentence stays on top while the current one forms below.
 let committed = "";
 let live = "";
 let liveSeq = 0;
@@ -18,8 +18,8 @@ let liveShown = "";
 const escapeHtml = (s) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-// O servidor trava o começo da frase, então quase sempre só a cauda muda: ela
-// entra com fade em vez de a linha inteira piscar.
+// The server locks the start of the sentence, so usually only the tail changes:
+// fade it in instead of flashing the entire line.
 function renderLive() {
   if (!live) {
     liveTextEl.textContent = "";
@@ -37,7 +37,7 @@ function render() {
   committedEl.textContent = committed;
   renderLive();
   wrap.classList.toggle("has-live", Boolean(live));
-  // Mede com a viva presa a uma linha: se transbordou, ela ganha as duas linhas.
+  // Measure with the live caption limited to one line; give it both lines if it overflows.
   wrap.classList.remove("live-long");
   if (committed && live && liveTextEl.offsetHeight > liveEl.clientHeight + 2) {
     wrap.classList.add("live-long");
@@ -76,7 +76,7 @@ function connect() {
       const seq = Number(msg.seq ?? 0);
       if (msg.final) {
         committed = text;
-        // Só limpa a linha viva se ela pertence a esta frase; se já é a próxima, fica.
+        // Clear the live line only if it belongs to this sentence; keep the next one.
         if (seq >= liveSeq) live = "";
       } else {
         live = text;

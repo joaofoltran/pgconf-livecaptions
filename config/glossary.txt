@@ -1,5 +1,5 @@
-# Dicas de domínio para o tradutor. Formato: palavra: orientação (em inglês, é o que o modelo lê).
-# Só entram no prompt quando a palavra aparece na frase. Reinicie o app após editar.
+# Domain hints for the translator. Format: word: guidance (in English, as read by the model).
+# Included in the prompt only when the word appears in the sentence. Restart after editing.
 banco: short for "banco de dados", translate as "database"; use "bank" only if the sentence is clearly about a financial institution
 bancos: usually "databases"; "banks" only if clearly financial institutions
 base: usually "database" (base de dados), not "base"

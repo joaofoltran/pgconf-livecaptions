@@ -20,7 +20,7 @@ let running = false;
 let pingTimer = null;
 let watchdogTimer = null;
 let lastDgMessage = 0;
-// true = o servidor fala com o Deepgram; mandamos só o PCM pelo WebSocket da sala.
+// true = the server connects to Deepgram; send only PCM through the room WebSocket.
 let sttProxy = false;
 
 function setText(id, text) {
@@ -57,7 +57,7 @@ function connectRoom() {
     roomWs.onopen = () => {
       clearTimeout(timer);
       setText("st-ws", "online");
-      // Reenviado a cada reconexão: no modo servidor é isso que abre o Deepgram.
+      // Resent on every reconnect: in server mode, this opens the Deepgram connection.
       if (running) {
         roomWs.send(
           JSON.stringify({
@@ -141,7 +141,7 @@ async function startDeepgram() {
     lastDgMessage = Date.now();
     const data = JSON.parse(ev.data);
 
-    // Fecha a frase quando o Deepgram não detectou a pausa por conta própria.
+    // Closes the sentence when Deepgram does not detect the pause on its own.
     if (data.type === "UtteranceEnd") {
       if (roomWs?.readyState === WebSocket.OPEN) {
         roomWs.send(JSON.stringify({ type: "flush" }));
@@ -205,8 +205,8 @@ async function startAudio() {
   setText("st-mic", "capturando");
 }
 
-// Se o Deepgram silenciar (aba rebaixada, rede, etc.), força a reconexão em vez
-// de deixar o telão congelado esperando.
+    // If Deepgram goes silent (throttled tab, network, etc.), force a reconnect
+    // instead of leaving the display frozen.
 function startWatchdog() {
   watchdogTimer = setInterval(() => {
     if (!running || !lastDgMessage) return;
@@ -217,7 +217,7 @@ function startWatchdog() {
       try {
         dgWs?.close();
       } catch {
-        /* onclose agenda o reconnect */
+        /* onclose schedules the reconnect */
       }
     }
   }, 5000);

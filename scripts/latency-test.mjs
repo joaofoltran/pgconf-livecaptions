@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Mede a latência ponta a ponta simulando a página de captura: transmite um WAV em
-// tempo real pelo WebSocket da sala (modo STT no servidor) e cronometra o que
-// chega ao overlay. Requer STT_PROXY=true no servidor.
+// Measures end-to-end latency by simulating the capture page: streams a WAV in
+// real time through the room WebSocket (server-side STT mode) and times what
+// reaches the overlay. Requires STT_PROXY=true on the server.
 //
-//   node scripts/latency-test.mjs --capture-url "https://host/r/teste?k=TOKEN" \
+//   node scripts/latency-test.mjs --capture-url "https://host/r/test-room?k=TOKEN" \
 //        --file test-audio/en.wav --direction en-pt [--runs 5] [--quiet] [--label SP]
 //
-// Também lê LC_CAPTURE_URL de um arquivo .env.test na raiz do projeto.
-// Com --runs N, imprime medianas agregadas: é o que permite comparar dois
-// servidores apesar da oscilação de 500–900 ms do primeiro token da OpenAI.
+// Also reads LC_CAPTURE_URL from a .env.test file in the project root.
+// With --runs N, prints aggregate medians, making it possible to compare two
+// servers despite OpenAI first-token latency varying by 500–900 ms.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -84,7 +84,7 @@ async function runOnce() {
   overlay.on("message", (raw) => {
     const msg = JSON.parse(raw.toString());
     if (msg.type === "ping") overlay.send(JSON.stringify({ type: "pong" }));
-    // Antes do áudio começar, o servidor só reenvia a última legenda antiga da sala.
+    // Before audio starts, the server only replays the room's previous caption.
     if (msg.type === "caption" && t0) mark(msg.final ? "FINAL" : "draft", `"${msg.translated}"`);
   });
 
@@ -115,7 +115,7 @@ async function runOnce() {
   await dgReady;
   const dgConnect = Date.now() - dgStart;
 
-  // Transmite no ritmo real, sem drift: envia tudo que já "deveria" ter sido falado.
+  // Streams in real time without drift: sends everything that should already have been spoken.
   t0 = Date.now();
   mark("audio", "início");
   let offset = 0;
@@ -148,7 +148,7 @@ async function runOnce() {
     }, 10);
   });
 
-  // Espera as últimas legendas: para quando ficar 4 s sem novidade (ou 12 s no total).
+  // Waits for the latest captions: stops after 4 s without updates (or 12 s total).
   await new Promise((resolve) => {
     const start = Date.now();
     const timer = setInterval(() => {
@@ -170,8 +170,8 @@ function metrics(events, t0, speechEnd, wsRtt, dgConnect) {
   const drafts = events.filter((e) => e.kind === "draft");
   const finals = events.filter((e) => e.kind === "FINAL");
 
-  // Tempo entre a última transcrição recebida e o draft seguinte: aproxima a ida e
-  // volta ao modelo (mais os gates de ritmo). É a parte que muda com o provedor/local.
+  // Time from the latest received transcript to the next draft: approximates the
+  // model round trip (plus cadence gates). This is what changes by provider/location.
   const t2d = [];
   for (const d of drafts) {
     const prev = [...transcripts].reverse().find((t) => t.t <= d.t);

@@ -29,7 +29,7 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* Máximo de duas linhas no telão, em qualquer combinação. */
+/* At most two lines on screen, in any combination. */
 #committed,
 #live {
   font-size: 2.9vw;
@@ -37,8 +37,9 @@ body {
 #committed {
   -webkit-line-clamp: 2;
 }
-/* A linha viva é ancorada pelo FIM: quando a frase passa do espaço, o começo sai
-   por cima e as palavras novas continuam visíveis (senão o telão parece travado). */
+/* Anchor the live line at the END: when the sentence exceeds the available space,
+   the beginning scrolls off the top while new words remain visible; otherwise
+   the display appears frozen. */
 #live {
   display: flex;
   flex-direction: column;
@@ -49,7 +50,7 @@ body {
 #live-text {
   flex-shrink: 0;
 }
-/* Frase fechada em cima + frase viva embaixo: uma linha cada. */
+/* Finalized sentence on top and live sentence below: one line each. */
 #caption.has-live #committed {
   opacity: 0.8;
   -webkit-line-clamp: 1;
@@ -57,14 +58,14 @@ body {
 #caption.has-live #live {
   max-height: calc(1 * 1.25em);
 }
-/* A frase viva cresceu além de uma linha: a fechada sai para não cortar o fim da viva. */
+/* The live sentence exceeded one line: hide the finalized one to preserve the live ending. */
 #caption.live-long #committed {
   display: none;
 }
 #caption.live-long #live {
   max-height: calc(2 * 1.25em);
 }
-/* Só a cauda da linha viva muda entre drafts; ela entra suave em vez de piscar. */
+/* Only the live line's tail changes between drafts; fade it in instead of flashing. */
 #live .grow {
   animation: grow-in 220ms ease-out;
 }

@@ -121,9 +121,9 @@ export type Alias = { canonical: string; pattern: RegExp };
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// "Patroni = patrone, patrono": o STT ouve a pronúncia brasileira de nomes em inglês
-// e escreve outra coisa; corrigimos antes de traduzir. Casamento por palavra inteira,
-// sem diferenciar caixa; espaços no apelido aceitam qualquer espaçamento ("t c d").
+// "Patroni = patrone, patrono": STT hears Brazilian pronunciations of English names
+// and writes something else; correct them before translating. Matches whole words
+// case-insensitively; spaces in aliases accept any whitespace ("t c d").
 export function loadAliases(): Alias[] {
   const out: Alias[] = [];
   for (const line of readLines("aliases.txt")) {
@@ -145,7 +145,7 @@ export function loadAliases(): Alias[] {
 
 export type GlossaryHint = { term: string; hint: string };
 
-// "banco: ..." — dica de domínio para o tradutor, incluída só quando a palavra aparece.
+// "banco: ..." — domain hint for the translator, included only when the word appears.
 export function loadGlossary(): GlossaryHint[] {
   const out: GlossaryHint[] = [];
   for (const line of readLines("glossary.txt")) {
@@ -192,13 +192,13 @@ export function loadConfig() {
     deepgramApiKey,
     openaiApiKey,
     openaiModel: env("OPENAI_MODEL") || "gpt-4.1-mini",
-    // Qualquer API compatível (Groq, Cerebras, ...): troque a base e o modelo.
+    // Any compatible API (Groq, Cerebras, ...): change the base URL and model.
     openaiBaseUrl: baseUrlEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    // JSON mesclado no corpo de cada chamada, para parâmetros específicos do provedor
-    // (ex.: {"reasoning_effort":"low"} nos modelos gpt-oss da Groq).
+    // JSON merged into each request body for provider-specific parameters
+    // (for example, {"reasoning_effort":"low"} for Groq gpt-oss models).
     openaiExtraBody: parseJsonObject("OPENAI_EXTRA_BODY", env("OPENAI_EXTRA_BODY")),
-    // Híbrido: drafts no provedor principal (rápido), final da frase neste outro
-    // (mais caprichado). Ativo só se FINAL_API_KEY estiver definida.
+    // Hybrid mode: drafts use the fast primary provider while final captions use
+    // this higher-quality provider. Enabled only when FINAL_API_KEY is set.
     finalProvider: env("FINAL_API_KEY")
       ? {
           baseUrl: baseUrlEnv("FINAL_BASE_URL", "https://api.openai.com/v1"),
@@ -208,8 +208,8 @@ export function loadConfig() {
           serviceTier: env("FINAL_SERVICE_TIER") || undefined,
         }
       : null,
-    // Segundo provedor para o final da frase quando o principal trava ou falha.
-    // Ativo só se FALLBACK_API_KEY estiver definida.
+    // Secondary provider for final captions when the primary stalls or fails.
+    // Enabled only when FALLBACK_API_KEY is set.
     fallback: env("FALLBACK_API_KEY")
       ? {
           baseUrl: baseUrlEnv("FALLBACK_BASE_URL", "https://api.openai.com/v1"),
@@ -220,15 +220,15 @@ export function loadConfig() {
       : null,
     openaiServiceTier: env("OPENAI_SERVICE_TIER"),
     dgEndpointing: String(integerEnv("DG_ENDPOINTING", "300", 50, 5000)),
-    // "multi" = Nova-3 multilíngue: aceita keyterms em PT e lida com fala em
-    // português misturada com jargão em inglês. Use "pt-BR" para voltar ao antigo.
+    // "multi" = multilingual Nova-3: accepts PT keyterms and handles Portuguese
+    // speech mixed with English jargon. Use "pt-BR" to restore the older behavior.
     dgPtLanguage: dgPtLanguageEnv(),
-    // true = o áudio vai para o servidor, que fala com o Deepgram (menos saltos
-    // quando o VPS está perto do Deepgram/OpenAI). false = navegador fala direto.
+    // true = audio goes to the server, which connects to Deepgram (fewer hops when
+    // the VPS is close to Deepgram/OpenAI). false = the browser connects directly.
     sttProxy: booleanEnv("STT_PROXY", "true"),
     liveDrafts: booleanEnv("LIVE_DRAFTS", "true"),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
-    // Teto somado das 4 salas. Default assume Tier 2 (5.000 req/min); no Tier 1 use 6.
+    // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),
     rooms,
     tokens,

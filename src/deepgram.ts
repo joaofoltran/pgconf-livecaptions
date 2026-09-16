@@ -39,8 +39,8 @@ export function deepgramListenUrl(
     endpointing: endpointing,
     utterance_end_ms: "1000",
   });
-  // Nova-3 aceita keyterm em inglês e no modo multilíngue ("multi").
-  // Em pt-BR monolíngue o suporte é mais recente; se a conexão falhar com
+  // Nova-3 accepts English keyterms and keyterms in multilingual ("multi") mode.
+  // Support is newer in monolingual pt-BR; if the connection fails with
   // "does not support keyterm prompting", use DG_PT_LANGUAGE=multi.
   for (const term of keyterms.slice(0, 100)) {
     params.append("keyterm", term);

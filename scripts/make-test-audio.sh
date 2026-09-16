@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Gera áudio de teste (16 kHz, mono, PCM 16-bit) com a voz do macOS, em EN e PT,
-# com frases do tipo que aparecem numa palestra de Postgres. Saída: test-audio/.
+# Generates test audio (16 kHz, mono, 16-bit PCM) with macOS voices in EN and PT,
+# using sentences typical of a Postgres talk. Output: test-audio/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

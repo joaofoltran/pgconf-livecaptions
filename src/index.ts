@@ -25,16 +25,16 @@ import {
 } from "./rooms.js";
 import { isRateLimited, translateCaption } from "./translate.js";
 
-// Um provedor que trava sem dar erro congela o telão: os drafts em voo ocupam a
-// fila e o final espera indefinidamente. Timeouts curtos devolvem o controle.
+// A provider that stalls without an error freezes the display: in-flight drafts
+// occupy the queue and the final waits indefinitely. Short timeouts restore control.
 const DRAFT_TIMEOUT_MS = 3000;
 const FINAL_TIMEOUT_MS = 3500;
 const FALLBACK_TIMEOUT_MS = 6000;
 const SLOW_WARN_MS = 1500;
 
-// Disjuntor: a Cerebras degrada em rajadas (dezenas de timeouts em segundos).
-// Depois de alguns estouros seguidos, drafts e finais vão ao fallback por um tempo
-// e só então voltamos a tentar o principal.
+// Circuit breaker: Cerebras can degrade in bursts (dozens of timeouts in seconds).
+// After several consecutive failures, route drafts and finals to the fallback
+// temporarily before trying the primary provider again.
 const BREAKER_FAILURES = 4;
 const BREAKER_WINDOW_MS = 15000;
 const BREAKER_OPEN_MS = 45000;
@@ -58,9 +58,9 @@ function notePrimaryFailure(why: string): void {
   }
 }
 
-// Mantém as conexões TLS com OpenAI/Deepgram vivas entre frases: o keep-alive
-// padrão (~4s) fecha na primeira pausa do palestrante e o draft seguinte paga
-// handshake de novo.
+// Keep TLS connections to OpenAI/Deepgram alive between sentences: the default
+// keep-alive (~4 s) closes on the speaker's first pause, forcing the next draft
+// to pay for another handshake.
 setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000 }));
 
 const config = loadConfig();
@@ -307,11 +307,11 @@ wss.on("connection", (ws, req) => {
 
     ws.on("message", (raw, isBinary) => {
       if (isBinary) {
-        // PCM 16 kHz da página de captura: só repassa para o Deepgram.
+        // 16 kHz PCM from the capture page: forward it directly to Deepgram.
         if (room.dg && room.dg.readyState === WebSocket.OPEN) {
           room.dg.send(raw as Buffer);
         } else if (room.sttActive && !room.dg && !room.dgReconnectTimer) {
-          // O Deepgram fechou por falta de áudio e voltou a chegar áudio: religa agora.
+          // Deepgram closed due to missing audio and audio resumed: reconnect now.
           openDeepgram(room);
         }
         return;
@@ -339,15 +339,15 @@ function parseDirection(value: unknown): Direction {
   return value === "pt-en" ? "pt-en" : "en-pt";
 }
 
-// Fecha a frase à força quando o Deepgram não detecta pausa. Com drafts o telão já
-// está em movimento, então pode esperar mais e entregar frases mais inteiras.
+// Force-close the sentence when Deepgram does not detect a pause. Drafts already
+// keep the display moving, so wait longer to produce more complete sentences.
 const MAX_PENDING_CHARS = 200;
 const MAX_PENDING_MS = config.liveDrafts ? 5000 : 2500;
 const MAX_DRAFTS_IN_FLIGHT = 4;
 const MIN_DRAFT_WORDS = 3;
 const GLOBAL_DRAFT_SPACING_MS = Math.round(1000 / Math.max(1, config.draftsPerSecond));
 
-// Espaçamento compartilhado pelas salas para não estourar o RPM da conta.
+// Shared spacing across rooms to stay within the account's request-per-minute limit.
 let lastGlobalDraftTs = 0;
 
 async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Promise<void> {
@@ -369,11 +369,11 @@ async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Pro
     room.direction = direction;
     notifyRoom(room, statusPayload(room));
     sendJson(ws, { type: "started", direction: room.direction });
-    // Só abre o Deepgram se a página pediu STT no servidor: páginas antigas
-    // (que falam direto com o Deepgram) seguem funcionando após um deploy.
+    // Open Deepgram only when the page requested server-side STT. Older pages
+    // that connect directly to Deepgram keep working after a deploy.
     if (config.sttProxy && config.deepgramApiKey && msg.stt === "server") {
       room.sttActive = true;
-      // Idempotente: a página reenvia "start" a cada reconexão do WebSocket.
+      // Idempotent: the page resends "start" on every WebSocket reconnect.
       if (!room.dg || directionChanged) openDeepgram(room);
     }
     return;
@@ -398,8 +398,8 @@ async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Pro
   handleFinalFragment(room, ws, text, Boolean(msg.speechFinal));
 }
 
-// O STT escreve "patrone", "t c d", "pg poo" para a pronúncia brasileira de nomes em
-// inglês; traduzir isso fielmente dá "patron", "TCD"... Corrigimos antes.
+// STT writes "patrone", "t c d", or "pg poo" for Brazilian pronunciations of
+// English names; faithful translation would produce "patron" or "TCD". Fix them first.
 function fixTranscript(text: string): string {
   let out = text;
   for (const alias of config.aliases) out = out.replace(alias.pattern, alias.canonical);
@@ -415,7 +415,7 @@ function handleFinalFragment(
   room.pending = room.pending ? `${room.pending} ${text}` : text;
 
   if (speechFinal || room.pending.length >= MAX_PENDING_CHARS) {
-    // Estouro por tamanho corta a frase no meio: o final não pode inventar um fim.
+    // A size overflow splits the sentence mid-phrase; the final must not invent an ending.
     void flushPending(room, ws, speechFinal);
     return;
   }
@@ -426,15 +426,15 @@ function handleFinalFragment(
     }, MAX_PENDING_MS);
   }
 
-  // O fragmento fechado também vale como candidato: mantém o telão andando
-  // mesmo se o próximo interim demorar.
+    // The closed fragment is also a candidate, keeping the display moving even
+    // if the next interim transcript takes a while.
   maybeDraft(room, "");
 }
 
-// ---- STT no servidor -------------------------------------------------------
-// O navegador manda PCM para cá e nós falamos com o Deepgram. Com o VPS perto
-// do Deepgram e da OpenAI, a transcrição não precisa voltar ao notebook antes
-// de virar tradução: o áudio cruza o oceano uma vez, a legenda outra.
+// ---- Server-side STT -------------------------------------------------------
+// The browser sends PCM here and the server connects to Deepgram. With the VPS
+// close to Deepgram and OpenAI, the transcript need not return to the laptop
+// before translation: audio crosses the ocean once and captions cross back once.
 
 const DG_RECONNECT_MS = 1000;
 const DG_SILENCE_TIMEOUT_MS = 20000;
@@ -476,8 +476,8 @@ function openDeepgram(room: Room): void {
     const why = reason.length ? reason.toString() : lastError;
     const detail = `offline (${code}${why ? ` ${why}` : ""})`;
     if (room.capture) sendJson(room.capture, { type: "dg", status: detail });
-    // 1011 = o Deepgram não recebeu áudio (aba dormindo, mic mudo, notebook fechado).
-    // Religar em loop a noite inteira não ajuda ninguém: esperamos o próximo áudio.
+    // 1011 = Deepgram received no audio (sleeping tab, muted mic, closed laptop).
+    // Reconnecting all night does not help; wait for the next audio packet.
     const noAudio = code === 1011;
     if (room.sttActive) {
       console.warn(`deepgram caiu ${room.id}: ${detail}; ${noAudio ? "aguardando áudio" : "reconectando"}`);
@@ -505,7 +505,7 @@ function closeDeepgram(room: Room): void {
     }
     dg.close();
   } catch {
-    /* já fechado */
+    /* already closed */
   }
 }
 
@@ -540,7 +540,7 @@ function handleDeepgramMessage(room: Room, raw: string): void {
   handleFinalFragment(room, room.capture, text, Boolean(data.speech_final));
 }
 
-// Deepgram mudo com áudio entrando: derruba e reconecta em vez de deixar o telão parado.
+// Deepgram is silent while audio arrives: reconnect instead of freezing the display.
 setInterval(() => {
   for (const room of rooms.values()) {
     const dg = room.dg;
@@ -553,8 +553,8 @@ setInterval(() => {
   }
 }, 5000);
 
-// Enquanto a frase é falada, retraduzimos ela inteira a cada intervalo para o telão
-// não ficar parado. Cada versão substitui a anterior e se corrige com mais contexto.
+// While the sentence is being spoken, retranslate it in full on every interval
+// so the display keeps moving. Each version replaces and corrects the previous one.
 function maybeDraft(room: Room, interim: string): void {
   if (!config.liveDrafts) return;
 
@@ -565,8 +565,8 @@ function maybeDraft(room: Room, interim: string): void {
   fireDraft(room);
 }
 
-// Se o gate bloqueia agora, agenda o disparo para quando liberar, em vez de torcer
-// para chegar outro interim: as últimas palavras antes da pausa também viram draft.
+// If the gate blocks now, schedule the request for when it opens instead of
+// relying on another interim; words just before a pause must also become a draft.
 function scheduleDraft(room: Room, delayMs: number): void {
   if (room.draftTimer) return;
   room.draftTimer = setTimeout(() => {
@@ -588,8 +588,8 @@ function fireDraft(room: Room): void {
     scheduleDraft(room, wait);
     return;
   }
-  // Cancelar o draft anterior deixaria o telão vazio: cada um leva ~1s e os interims
-  // chegam mais rápido que isso. Eles correm em paralelo e o seq descarta os atrasados.
+  // Canceling the previous draft would leave the display empty: each takes ~1 s
+  // while interims arrive faster. Run them in parallel and discard late sequences.
   if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) {
     scheduleDraft(room, config.draftIntervalMs);
     return;
@@ -620,8 +620,8 @@ function fireDraft(room: Room): void {
     prefix,
     provider: degraded ? config.fallback ?? undefined : undefined,
   }).then(capitalizeFirst);
-  // O flush consulta este mapa: se o final tem o mesmo texto de um draft em voo,
-  // espera por ele em vez de pagar outra ida à OpenAI.
+  // Flush checks this map: if the final matches an in-flight draft, wait for it
+  // instead of paying for another OpenAI round trip.
   room.draftsInFlight.set(abort, { source: candidate, promise });
 
   promise
@@ -631,12 +631,12 @@ function fireDraft(room: Room): void {
       if (seq <= room.lastDraftSeq) return;
 
       const previous = room.lastDraft?.translated ?? null;
-      // A frase já mudou de dono (flush) desde que este draft saiu: não render.
+      // Flush took ownership of the sentence after this draft started: do not render it.
       if (prefix !== room.lockedPrefix && !startsWithWords(translated, room.lockedPrefix)) return;
       if (prefix && !startsWithWords(translated, prefix)) {
         console.warn(`draft ignorou o prefixo travado ${room.id}`);
       }
-      // Um draft que encolhe faz palavras sumirem do telão; o próximo vem em instantes.
+      // A shrinking draft removes words from the display; another arrives momentarily.
       if (previous && words(translated).length < words(previous).length - 1) return;
 
       room.lastDraftSeq = seq;
@@ -659,7 +659,7 @@ function fireDraft(room: Room): void {
         }
         return;
       }
-      // Draft perdido não pausa nada: o próximo vem em instantes.
+      // A lost draft pauses nothing; another arrives momentarily.
       if (isRateLimited(err)) {
         console.warn("draft rate limited (descartado)");
         return;
@@ -680,8 +680,8 @@ function abortDrafts(room: Room): void {
   room.draftsInFlight.clear();
 }
 
-// O draft é traduzido como frase aberta (sem ponto final); ao promovê-lo a final,
-// devolve a pontuação que o original tinha.
+// Translate the draft as an open sentence without final punctuation. When
+// promoting it to final, restore the punctuation from the original.
 function closePunctuation(translated: string, original: string): string {
   const end = original.match(/[.!?…]+$/)?.[0];
   if (!end || /[.!?…]$/.test(translated)) return translated;
@@ -694,8 +694,8 @@ function translationContext(room: Room) {
     : undefined;
 }
 
-// O final do Deepgram difere do último interim só em caixa/pontuação na maioria
-// das vezes; comparar sem isso permite reusar a tradução do draft.
+// Deepgram's final usually differs from the latest interim only in case and
+// punctuation; ignoring those differences allows draft translation reuse.
 function normalizeText(text: string): string {
   return text
     .toLowerCase()
@@ -725,9 +725,9 @@ function capitalizeFirst(text: string): string {
   return i < 0 ? text : text.slice(0, i) + text[i].toUpperCase() + text.slice(i + 1);
 }
 
-// As últimas palavras de um draft ainda podem mudar quando a frase avança (ordem
-// adjetivo/substantivo, negação); as anteriores, se repetidas em dois drafts
-// seguidos, já podem ser prometidas ao público.
+// A draft's final words may still change as the sentence grows (adjective/noun
+// order, negation). Earlier words repeated in two consecutive drafts can
+// already be promised to the audience.
 const TAIL_FREE_WORDS = 3;
 
 function advanceLock(room: Room, previous: string | null, shown: string): void {
@@ -744,9 +744,9 @@ function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): P
   return run(abort.signal).finally(() => clearTimeout(timer));
 }
 
-// O final não pode ficar preso num provedor travado nem cair no texto original por
-// um 429 passageiro: tenta o principal com timeout, depois o fallback (outro
-// provedor) e, sem fallback, insiste no principal antes de desistir.
+// The final must not remain stuck on a stalled provider or fall back to source
+// text after a transient 429. Try the primary with a timeout, then another
+// provider as fallback; without one, retry the primary before giving up.
 async function translateFinal(
   room: Room,
   original: string,
@@ -757,8 +757,8 @@ async function translateFinal(
   unfinished = false
 ): Promise<string> {
   const startedAt = Date.now();
-  // No modo híbrido o final vai a outro provedor (mais lento, mais caprichado);
-  // o timeout é mais folgado porque ele não segura a linha viva, só a consolidação.
+  // In hybrid mode, finals use another, slower but higher-quality provider.
+  // Its timeout is looser because it delays only consolidation, not the live line.
   const degraded = primaryDegraded();
   const provider = degraded ? config.fallback ?? undefined : config.finalProvider ?? undefined;
   const timeoutMs = provider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
@@ -801,8 +801,8 @@ async function translateFinal(
   throw lastErr;
 }
 
-// A frase só é traduzida inteira: em EN<->PT a ordem das palavras muda, e traduzir
-// fragmento por fragmento deixa o texto travado.
+// Translate only complete sentences: EN<->PT word order changes, and translating
+// fragment by fragment produces rigid text.
 async function flushPending(room: Room, ws: WebSocket | null, complete = true): Promise<void> {
   if (room.flushTimer) {
     clearTimeout(room.flushTimer);
@@ -813,7 +813,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   room.pending = "";
   room.draftSource = "";
   room.draftCandidate = "";
-  // O final continua o que o público já leu; a próxima frase começa sem travas.
+  // The final continues what the audience already read; the next sentence starts unlocked.
   const prefix = room.lockedPrefix;
   room.lockedPrefix = "";
   if (room.draftTimer) {
@@ -826,8 +826,8 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   const seq = ++room.seq;
   const context = translationContext(room);
 
-  // Com drafts ativos, o streaming por token só somaria tremido: cada versão
-  // exibida já é uma frase completa.
+  // With drafts enabled, token streaming would only add jitter: every displayed
+  // version is already a complete sentence.
   const onPartial = config.liveDrafts
     ? undefined
     : (partial: string) => {
@@ -841,9 +841,9 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
         });
       };
 
-  // Fast-path: se o último draft já traduziu exatamente esta frase, não há por que
-  // esperar outra ida à OpenAI — o final sai na hora e sem reescrita no telão.
-  // No híbrido o final existe justamente para ser refeito pelo provedor melhor.
+  // Fast path: if the latest draft already translated this exact sentence, avoid
+  // another OpenAI round trip; emit the final immediately without rewriting the display.
+  // In hybrid mode, the final exists specifically for the better provider to redo it.
   const wanted = normalizeText(original);
   let reusable =
     !config.finalProvider && room.lastDraft && normalizeText(room.lastDraft.source) === wanted
@@ -851,14 +851,14 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
       : null;
   room.lastDraft = null;
 
-  // O último interim do Deepgram costuma ser idêntico ao final, e o draft dele
-  // ainda está em voo quando o flush chega: esperar por ele é mais rápido que
-  // começar outra tradução.
+  // Deepgram's latest interim is usually identical to the final, and its draft
+  // is still in flight when flush arrives. Waiting is faster than starting
+  // another translation.
   if (!reusable && !config.finalProvider) {
     for (const draft of room.draftsInFlight.values()) {
       if (normalizeText(draft.source) === wanted) {
         try {
-          // Se esse draft estiver travado no provedor, não vale esperar por ele.
+          // Do not wait for this draft if it is stalled at the provider.
           reusable = await Promise.race([
             draft.promise,
             new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
@@ -884,7 +884,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
       room.lastSource = original;
       room.lastTranslation = translated;
     } catch (err) {
-      // Só aqui o telão mostra o texto na língua de origem, como último recurso.
+      // Only here does the display show source-language text as a last resort.
       console.error("translate failed", err);
       if (ws) sendJson(ws, { type: "translate_error" });
     }

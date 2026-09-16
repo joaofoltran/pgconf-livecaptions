@@ -1,5 +1,5 @@
-// Roda na thread de áudio: continua capturando mesmo com a aba em segundo plano,
-// onde o ScriptProcessor (thread principal) é rebaixado pelo Chrome.
+// Runs on the audio thread and keeps capturing even when the tab is in the background,
+// where Chrome throttles the main-thread ScriptProcessor.
 class PcmCapture extends AudioWorkletProcessor {
   constructor() {
     super();

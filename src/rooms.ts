@@ -31,11 +31,11 @@ export type Room = {
   draftsInFlight: Map<AbortController, { source: string; promise: Promise<string> }>;
   lastDraft: { source: string; translated: string } | null;
   lastDraftSeq: number;
-  // Começo da tradução da frase atual que já se repetiu em dois drafts seguidos:
-  // fica travado e o modelo continua a partir dele, para a linha viva só crescer.
+  // Start of the current sentence's translation repeated in two consecutive drafts:
+  // lock it and have the model continue from there so the live line only grows.
   lockedPrefix: string;
   renderedFinalSeq: number;
-  // STT no servidor: a página de captura manda PCM e o servidor fala com o Deepgram.
+  // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;
   dgLastMsg: number;
   dgReconnectTimer: NodeJS.Timeout | null;
@@ -74,11 +74,11 @@ export function createRoom(id: string, token: string): Room {
   };
 }
 
-// As traduções correm em paralelo, então uma lenta nunca pode sobrescrever uma mais
-// nova. Finais e drafts são faixas diferentes no overlay: um final da frase anterior
-// deve entrar na linha consolidada mesmo que um draft da frase seguinte já esteja
-// na linha viva; já um draft mais antigo que o último final pertence a uma frase
-// que acabou de fechar e é descartado.
+// Translations run in parallel, so a slow one must never overwrite a newer one.
+// Finals and drafts occupy different overlay lanes: a previous sentence's final
+// must enter the committed line even if a draft of the next sentence is already
+// live. A draft older than the latest final belongs to a sentence that just
+// closed and must be discarded.
 export function emitCaption(
   room: Room,
   seq: number,
@@ -115,8 +115,8 @@ export function statusPayload(room: Room) {
     overlays: room.overlays.size,
     direction: room.direction,
     lastCaption: room.lastCaption,
-    // "server" = página nova mandando áudio para cá; "browser" = página antiga
-    // falando direto com o Deepgram (ou captura parada).
+    // "server" = new page sending audio here; "browser" = old page connecting
+    // directly to Deepgram (or stopped capture).
     stt: room.dg ? "server" : "browser",
   };
 }

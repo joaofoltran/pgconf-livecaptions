@@ -1,7 +1,7 @@
-# Correções do que o Deepgram escreve ao ouvir nomes em inglês com pronúncia brasileira.
-# Formato: Termo correto = como o STT escreve, outra grafia, ...
-# Casamento por palavra inteira, sem diferenciar maiúsculas; espaços aceitam "t c d" e "tcd".
-# Vale para drafts e finais, antes da tradução. Reinicie o app após editar.
+# Corrections for how Deepgram transcribes English names pronounced with a Brazilian accent.
+# Format: Correct term = STT spelling, another spelling, ...
+# Matches whole words case-insensitively; spaces allow both "t c d" and "tcd".
+# Applied to drafts and finals before translation. Restart the app after editing.
 Patroni = patrone, patrono, patrona, patronic, patroney, patroni, patronny
 etcd = t c d, e t c d, etc d, et cd, etecedê, é t c d
 HAProxy = hprox, h prox, ha prox, hproxy, ha proxy, agá proxy, rrá proxy

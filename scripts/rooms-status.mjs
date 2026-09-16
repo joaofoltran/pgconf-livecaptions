@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Mostra, sem tocar em nada, quais salas estão capturando agora e quantos overlays
-// (OBS) estão conectados. Útil antes de um deploy: só reinicie com todas offline.
+// Shows, without changing anything, which rooms are capturing and how many
+// overlays (OBS) are connected. Useful before a deploy: restart only when all are offline.
 //
 //   node scripts/rooms-status.mjs "https://host/r/room-1?k=T1" "https://host/r/room-2?k=T2" ...
 //
-// Ou LC_ROOM_URLS=url1,url2,... no .env.test.
+// Or set LC_ROOM_URLS=url1,url2,... in .env.test.
 
 import fs from "node:fs";
 import path from "node:path";

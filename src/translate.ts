@@ -1,15 +1,15 @@
 import type { AppConfig, Direction } from "./config.js";
 
-// Compara ignorando caixa, hífens e underscores: o STT transcreve
-// "write ahead log" e o termo cadastrado é "write-ahead log".
-// Os espaços nas bordas garantem casamento por palavra inteira
-// ("WAL" não casa com "wall").
+// Compares while ignoring case, hyphens, and underscores: STT transcribes
+// "write ahead log" while the registered term is "write-ahead log".
+// Padding with spaces ensures whole-word matching
+// ("WAL" does not match "wall").
 function normalizeForMatch(s: string): string {
   return ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
 }
 
-// Só os termos que aparecem nesta frase. Mandar a lista toda em cada requisição
-// gastaria tokens (e latência) sem necessidade.
+// Include only terms found in this sentence. Sending the full list with every
+// request would waste tokens (and latency).
 function doNotTranslateList(keyterms: string[], text: string): string {
   const haystack = normalizeForMatch(text);
   return keyterms
@@ -47,12 +47,12 @@ export function primaryProvider(config: AppConfig): Provider {
 
 export type TranslateOptions = {
   context?: TranslationContext;
-  // A frase ainda está sendo falada: não inventar um fim para ela.
+  // The sentence is still being spoken: do not invent an ending.
   unfinished?: boolean;
   onPartial?: (partial: string) => void;
   signal?: AbortSignal;
   provider?: Provider;
-  // Texto já exibido no telão: a saída deve começar exatamente por ele.
+  // Text already shown on screen: output must begin with it exactly.
   prefix?: string;
 };
 
