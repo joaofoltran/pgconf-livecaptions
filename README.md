@@ -253,12 +253,46 @@ docker compose up -d --force-recreate app
 
 ## Translation providers
 
-The primary provider is configured through `OPENAI_*`. Set a different base URL
-and model to use a compatible service:
+The primary provider is configured through `OPENAI_*`. Despite that prefix,
+these variables accept any OpenAI-compatible service; `OPENAI_API_KEY` contains
+the primary provider's key, not necessarily an OpenAI key.
+
+### Production-tested setup: Cerebras primary, OpenAI fallback
+
+The original conference deployment used Cerebras `gpt-oss-120b` for normal
+draft and final translation, with OpenAI `gpt-4.1-mini` used only when Cerebras
+timed out or failed:
+
+```dotenv
+OPENAI_BASE_URL=https://api.cerebras.ai/v1
+OPENAI_API_KEY=your-cerebras-key
+OPENAI_MODEL=gpt-oss-120b
+OPENAI_EXTRA_BODY='{"reasoning_effort":"low"}'
+OPENAI_SERVICE_TIER=
+
+FALLBACK_BASE_URL=https://api.openai.com/v1
+FALLBACK_API_KEY=your-openai-key
+FALLBACK_MODEL=gpt-4.1-mini
+FALLBACK_EXTRA_BODY=
+```
+
+We chose this arrangement because OpenAI was the latency bottleneck in our
+September 2026 tests from a Sao Paulo VPS. On noisy real-event transcripts,
+Cerebras `gpt-oss-120b` produced similarly faithful translations in roughly
+305 ms versus 751 ms for OpenAI `gpt-4.1-mini`. OpenAI remained valuable as a
+fallback: it was slower, but prevented a Cerebras stall from dropping the final
+caption entirely.
+
+These numbers are historical measurements, not a promise of current provider
+performance. Test both quality and latency from your venue and accounts.
+
+### Other provider configurations
+
+To use OpenAI as the primary provider:
 
 ```dotenv
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_KEY=your-key
+OPENAI_API_KEY=your-openai-key
 OPENAI_MODEL=gpt-4.1-mini
 ```
 

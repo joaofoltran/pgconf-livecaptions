@@ -85,6 +85,11 @@ The translation client calls:
 
 The endpoint must support streamed OpenAI-compatible chat completions.
 
+The `OPENAI_*` names describe the API protocol used by the client. They do not
+require OpenAI to be the primary provider. For example, when Cerebras is
+primary, `OPENAI_API_KEY` contains the Cerebras key; the actual OpenAI key goes
+in `FALLBACK_API_KEY`.
+
 ### Primary provider
 
 | Variable | Default | Description |
@@ -105,18 +110,57 @@ OPENAI_EXTRA_BODY=
 OPENAI_SERVICE_TIER=
 ```
 
-Generic compatible-provider example:
+### Production-tested: Cerebras primary with OpenAI fallback
+
+The original conference production configuration was:
 
 ```dotenv
-OPENAI_BASE_URL=https://provider.example.com/v1
-OPENAI_API_KEY=replace-me
-OPENAI_MODEL=provider-model-name
+OPENAI_BASE_URL=https://api.cerebras.ai/v1
+OPENAI_API_KEY=your-cerebras-key
+OPENAI_MODEL=gpt-oss-120b
 OPENAI_EXTRA_BODY='{"reasoning_effort":"low"}'
 OPENAI_SERVICE_TIER=
+
+FALLBACK_BASE_URL=https://api.openai.com/v1
+FALLBACK_API_KEY=your-openai-key
+FALLBACK_MODEL=gpt-4.1-mini
+FALLBACK_EXTRA_BODY=
 ```
 
 Use valid JSON for `OPENAI_EXTRA_BODY`. Single quotes around the complete JSON
 value work with both the Node dotenv parser and Docker Compose.
+
+#### Why this arrangement
+
+In September 2026 tests from the original Sao Paulo VPS, OpenAI first-token
+latency was usually the slowest part of the live draft path. Measurements were
+roughly 500–900 ms across the tested OpenAI models, and
+`OPENAI_SERVICE_TIER=priority` did not produce a measurable improvement in that
+environment.
+
+On noisy transcripts from the real event, Cerebras `gpt-oss-120b` with
+`reasoning_effort: low` was comparably faithful while responding in roughly
+305 ms, versus 751 ms for OpenAI `gpt-4.1-mini`. That made Cerebras the better
+normal translation path for captions that needed to grow several times per
+second.
+
+OpenAI was deliberately kept as the fallback rather than removed. If Cerebras
+timed out or failed, a slower recovered final caption was preferable to no
+final caption. The app aborts a stalled primary final request and retries it
+through `FALLBACK_*`.
+
+These results are historical and provider performance changes over time. Use
+the latency script and real-event recordings to validate the choice for your
+location, account tiers, and current models.
+
+Generic compatible-provider example:
+
+```dotenv
+OPENAI_BASE_URL=https://provider.example.com/v1
+OPENAI_API_KEY=primary-provider-key
+OPENAI_MODEL=provider-model-name
+OPENAI_EXTRA_BODY=
+```
 
 ### Separate final provider
 

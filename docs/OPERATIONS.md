@@ -393,11 +393,22 @@ first-draft timing, Deepgram connection time, and WebSocket round-trip time.
 ### Historical benchmark context
 
 The original event deployment was measured from a Sao Paulo VPS in September
-2026. In that environment:
+2026. It used Cerebras `gpt-oss-120b` with `reasoning_effort: low` as the
+primary translator and OpenAI `gpt-4.1-mini` only as the fallback.
+
+In that environment:
 
 - network round-trip to US-hosted APIs was meaningful but not the largest
   component;
-- translation first-token latency often dominated draft responsiveness;
+- OpenAI first-token latency was usually 500–900 ms and often dominated draft
+  responsiveness;
+- OpenAI's priority service tier did not produce a measurable latency
+  improvement in those tests;
+- on noisy real-event transcripts, Cerebras `gpt-oss-120b` was comparably
+  faithful and responded in roughly 305 ms, versus 751 ms for OpenAI
+  `gpt-4.1-mini`;
+- OpenAI remained configured as fallback because a slower recovered final
+  caption was preferable to losing the caption when Cerebras stalled;
 - Deepgram utterance finalization added delay after speaker silence;
 - fast compatible providers varied substantially on noisy real transcripts;
 - provider quality measured on clean sample sentences did not predict quality
