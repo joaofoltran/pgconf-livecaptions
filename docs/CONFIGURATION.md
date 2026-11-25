@@ -145,9 +145,10 @@ normal translation path for captions that needed to grow several times per
 second.
 
 OpenAI was deliberately kept as the fallback rather than removed. If Cerebras
-timed out or failed, a slower recovered final caption was preferable to no
-final caption. The app aborts a stalled primary final request and retries it
-through `FALLBACK_*`.
+is silent for `FIRST_TOKEN_MS` (default 600 ms), the app starts the fallback in
+parallel and keeps whichever provider streams first. That recovers a stalled
+caption in about one first-token window instead of waiting for the whole
+request timeout.
 
 These results are historical and provider performance changes over time. Use
 the latency script and real-event recordings to validate the choice for your
@@ -181,8 +182,10 @@ real-event transcripts before enabling it.
 
 ### Fallback provider
 
-When `FALLBACK_API_KEY` is present, the server sends final captions to this
-provider after a primary timeout or failure:
+When `FALLBACK_API_KEY` is present, the server hedges draft and final captions
+against this provider. If the preferred provider emits no token within
+`FIRST_TOKEN_MS`, the fallback request starts in parallel and the first
+provider to stream wins; the other request is cancelled.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -190,6 +193,7 @@ provider after a primary timeout or failure:
 | `FALLBACK_BASE_URL` | `https://api.openai.com/v1` | Fallback API root. |
 | `FALLBACK_MODEL` | `gpt-4.1-mini` | Fallback model. |
 | `FALLBACK_EXTRA_BODY` | empty object | JSON fields merged into fallback requests. |
+| `FIRST_TOKEN_MS` | `600` | Milliseconds to wait for the preferred provider's first token before hedging. |
 
 Example with a compatible primary and OpenAI fallback:
 
@@ -239,6 +243,7 @@ call the `/v1/auth/grant` endpoint.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `LIVE_DRAFTS` | `true` | Translate interim speech instead of waiting only for final phrases. |
+| `FIRST_TOKEN_MS` | `600` | Start fallback if the preferred provider has not streamed a token. |
 | `DRAFT_INTERVAL_MS` | `350` | Minimum interval between draft translation attempts for a room. |
 | `DRAFTS_PER_SECOND` | `15` | Global draft request budget shared across all rooms. |
 

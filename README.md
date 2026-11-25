@@ -280,8 +280,8 @@ We chose this arrangement because OpenAI was the latency bottleneck in our
 September 2026 tests from a Sao Paulo VPS. On noisy real-event transcripts,
 Cerebras `gpt-oss-120b` produced similarly faithful translations in roughly
 305 ms versus 751 ms for OpenAI `gpt-4.1-mini`. OpenAI remained valuable as a
-fallback: it was slower, but prevented a Cerebras stall from dropping the final
-caption entirely.
+fallback: it is slower, but a stall now starts that fallback after
+`FIRST_TOKEN_MS` (default 600 ms) and keeps whichever provider streams first.
 
 These numbers are historical measurements, not a promise of current provider
 performance. Test both quality and latency from your venue and accounts.

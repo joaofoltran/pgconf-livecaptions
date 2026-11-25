@@ -23,7 +23,7 @@ import {
   type CaptionLine,
   type Room,
 } from "./rooms.js";
-import { isRateLimited, translateCaption } from "./translate.js";
+import { isRateLimited, translateWithHedge } from "./translate.js";
 
 // A provider that stalls without an error freezes the display: in-flight drafts
 // occupy the queue and the final waits indefinitely. Short timeouts restore control.
@@ -33,9 +33,9 @@ const FALLBACK_TIMEOUT_MS = 6000;
 const SLOW_WARN_MS = 1500;
 
 // Circuit breaker: Cerebras can degrade in bursts (dozens of timeouts in seconds).
-// After several consecutive failures, route drafts and finals to the fallback
+// After two failures in the window, route drafts and finals to the fallback
 // temporarily before trying the primary provider again.
-const BREAKER_FAILURES = 4;
+const BREAKER_FAILURES = 2;
 const BREAKER_WINDOW_MS = 15000;
 const BREAKER_OPEN_MS = 45000;
 const breaker = { failures: [] as number[], openUntil: 0 };
@@ -53,7 +53,7 @@ function notePrimaryFailure(why: string): void {
     breaker.openUntil = now + BREAKER_OPEN_MS;
     breaker.failures = [];
     console.warn(
-      `provedor principal degradado (${why}); drafts e finais no fallback ${config.fallback.model} por ${BREAKER_OPEN_MS / 1000} s`
+      `preferred provider degraded (${why}); drafts and finals on fallback ${config.fallback.model} for ${BREAKER_OPEN_MS / 1000} s`
     );
   }
 }
@@ -575,6 +575,22 @@ function scheduleDraft(room: Room, delayMs: number): void {
   }, Math.max(25, delayMs));
 }
 
+function abortOldestStalledDraft(room: Room): boolean {
+  let oldest: AbortController | null = null;
+  let oldestStarted = Infinity;
+  for (const [abort, draft] of room.draftsInFlight) {
+    if (draft.gotToken) continue;
+    if (draft.startedAt < oldestStarted) {
+      oldest = abort;
+      oldestStarted = draft.startedAt;
+    }
+  }
+  if (!oldest) return false;
+  oldest.abort();
+  room.draftsInFlight.delete(oldest);
+  return true;
+}
+
 function fireDraft(room: Room): void {
   const candidate = room.draftCandidate;
   if (!candidate || candidate === room.draftSource) return;
@@ -588,9 +604,9 @@ function fireDraft(room: Room): void {
     scheduleDraft(room, wait);
     return;
   }
-  // Canceling the previous draft would leave the display empty: each takes ~1 s
-  // while interims arrive faster. Run them in parallel and discard late sequences.
-  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) {
+  // Canceling a draft that already has tokens would flash the display empty.
+  // A silent stalled request only occupies a slot: drop the oldest of those.
+  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT && !abortOldestStalledDraft(room)) {
     scheduleDraft(room, config.draftIntervalMs);
     return;
   }
@@ -600,29 +616,36 @@ function fireDraft(room: Room): void {
   room.draftSource = candidate;
 
   const abort = new AbortController();
-  let timedOut = false;
   const degraded = primaryDegraded();
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    abort.abort();
-  }, degraded ? FALLBACK_TIMEOUT_MS : DRAFT_TIMEOUT_MS);
-
   const seq = ++room.seq;
   const direction = room.direction;
   const context = translationContext(room);
   const startedAt = now;
   const prefix = room.lockedPrefix;
+  const inFlight = { source: candidate, promise: Promise.resolve(""), startedAt, gotToken: false };
 
-  const promise = translateCaption(config, candidate, direction, {
+  const promise = translateWithHedge(config, candidate, direction, {
     context,
     unfinished: true,
     signal: abort.signal,
     prefix,
-    provider: degraded ? config.fallback ?? undefined : undefined,
+    fallback: config.fallback,
+    firstTokenMs: config.firstTokenMs,
+    timeoutMs: DRAFT_TIMEOUT_MS,
+    fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
+    skipPreferred: degraded,
+    onPartial: () => {
+      inFlight.gotToken = true;
+    },
+    onPreferredStall: (why) => {
+      if (!degraded) notePrimaryFailure(`draft ${why}`);
+      console.warn(`draft hedge ${room.id}: ${why}`);
+    },
   }).then(capitalizeFirst);
+  inFlight.promise = promise;
   // Flush checks this map: if the final matches an in-flight draft, wait for it
-  // instead of paying for another OpenAI round trip.
-  room.draftsInFlight.set(abort, { source: candidate, promise });
+  // instead of paying for another translation round trip.
+  room.draftsInFlight.set(abort, inFlight);
 
   promise
     .then((translated) => {
@@ -652,23 +675,14 @@ function fireDraft(room: Room): void {
       });
     })
     .catch((err) => {
-      if (abort.signal.aborted) {
-        if (timedOut) {
-          console.warn(`draft timeout ${room.id} (descartado)`);
-          if (!degraded) notePrimaryFailure("draft timeout");
-        }
-        return;
-      }
-      // A lost draft pauses nothing; another arrives momentarily.
+      if (abort.signal.aborted) return;
       if (isRateLimited(err)) {
-        console.warn("draft rate limited (descartado)");
+        console.warn("draft rate limited");
         return;
       }
       console.error("draft failed", err);
-      if (!degraded) notePrimaryFailure("draft error");
     })
     .finally(() => {
-      clearTimeout(timeout);
       room.draftsInFlight.delete(abort);
     });
 }
@@ -745,8 +759,8 @@ function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): P
 }
 
 // The final must not remain stuck on a stalled provider or fall back to source
-// text after a transient 429. Try the primary with a timeout, then another
-// provider as fallback; without one, retry the primary before giving up.
+// text after a transient 429. Hedge the preferred provider against fallback;
+// without a fallback, retry the preferred provider after a 429 before giving up.
 async function translateFinal(
   room: Room,
   original: string,
@@ -760,30 +774,32 @@ async function translateFinal(
   // In hybrid mode, finals use another, slower but higher-quality provider.
   // Its timeout is looser because it delays only consolidation, not the live line.
   const degraded = primaryDegraded();
-  const provider = degraded ? config.fallback ?? undefined : config.finalProvider ?? undefined;
-  const timeoutMs = provider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
+  const preferred = degraded ? undefined : config.finalProvider ?? undefined;
+  const timeoutMs = preferred ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
   const base = { context, onPartial, prefix, unfinished };
   try {
-    const out = await withTimeout(timeoutMs, (signal) =>
-      translateCaption(config, original, direction, { ...base, signal, provider })
-    );
+    const out = await translateWithHedge(config, original, direction, {
+      ...base,
+      provider: preferred,
+      fallback: config.fallback,
+      firstTokenMs: config.firstTokenMs,
+      timeoutMs,
+      fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
+      skipPreferred: degraded,
+      onPreferredStall: (why) => {
+        if (!degraded) notePrimaryFailure(`final ${why}`);
+        if (config.fallback) {
+          console.warn(
+            `final hedge ${room.id}: ${why}; fallback ${config.fallback.model}`
+          );
+        }
+      },
+    });
     const took = Date.now() - startedAt;
     if (took > SLOW_WARN_MS) console.warn(`final lento ${room.id}: ${took} ms`);
     return out;
   } catch (err) {
-    const why = err instanceof Error && err.name === "AbortError" ? `timeout ${timeoutMs} ms` : String(err);
-    if (!degraded) notePrimaryFailure(`final ${why}`);
-    if (config.fallback) {
-      console.warn(`final no principal falhou (${why}); usando fallback ${config.fallback.model}`, room.id);
-      return withTimeout(FALLBACK_TIMEOUT_MS, (signal) =>
-        translateCaption(config, original, direction, {
-          ...base,
-          signal,
-          provider: config.fallback ?? undefined,
-        })
-      );
-    }
-    if (!isRateLimited(err)) throw err;
+    if (!isRateLimited(err) || config.fallback) throw err;
   }
 
   let lastErr: unknown;
@@ -791,7 +807,16 @@ async function translateFinal(
     await new Promise((resolve) => setTimeout(resolve, delay));
     try {
       return await withTimeout(timeoutMs, (signal) =>
-        translateCaption(config, original, direction, { ...base, signal, provider })
+        translateWithHedge(config, original, direction, {
+          ...base,
+          signal,
+          provider: preferred,
+          fallback: config.fallback,
+          firstTokenMs: config.firstTokenMs,
+          timeoutMs,
+          fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
+          skipPreferred: degraded,
+        })
       );
     } catch (err) {
       lastErr = err;
@@ -826,20 +851,18 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   const seq = ++room.seq;
   const context = translationContext(room);
 
-  // With drafts enabled, token streaming would only add jitter: every displayed
-  // version is already a complete sentence.
-  const onPartial = config.liveDrafts
-    ? undefined
-    : (partial: string) => {
-        emitCaption(room, seq, {
-          type: "caption",
-          seq,
-          original,
-          translated: partial,
-          direction,
-          final: false,
-        });
-      };
+  // Stream the final onto the live line even while drafts are enabled, so a
+  // fallback sentence appears word by word instead of arriving in one dump.
+  const onPartial = (partial: string) => {
+    emitCaption(room, seq, {
+      type: "caption",
+      seq,
+      original,
+      translated: partial,
+      direction,
+      final: false,
+    });
+  };
 
   // Fast path: if the latest draft already translated this exact sentence, avoid
   // another OpenAI round trip; emit the final immediately without rewriting the display.
@@ -861,7 +884,9 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
           // Do not wait for this draft if it is stalled at the provider.
           reusable = await Promise.race([
             draft.promise,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+            new Promise<null>((resolve) =>
+              setTimeout(() => resolve(null), config.firstTokenMs + 1500)
+            ),
           ]);
         } catch {
           reusable = null;

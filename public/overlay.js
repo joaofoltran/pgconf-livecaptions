@@ -14,9 +14,73 @@ let live = "";
 let liveSeq = 0;
 let hideTimer = null;
 let liveShown = "";
+let liveTarget = "";
+let pendingFinal = false;
+let paceTimer = null;
+
+const PACE_WORD_MS = 50;
+
+// Keep in sync with public/caption-pace.js (unit tests import that copy).
+function nextPacedCaption(shown, target) {
+  if (target === shown) return shown;
+  if (!target) return "";
+  const targetWords = target.trim().split(/\s+/).filter(Boolean);
+  const shownWords = shown.trim() ? shown.trim().split(/\s+/).filter(Boolean) : [];
+  const key = (word) => word.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+  let i = 0;
+  while (
+    i < shownWords.length &&
+    i < targetWords.length &&
+    key(shownWords[i]) === key(targetWords[i])
+  ) {
+    i++;
+  }
+  if (i < shownWords.length) return targetWords.slice(0, i).join(" ");
+  if (i < targetWords.length) return targetWords.slice(0, i + 1).join(" ");
+  return target;
+}
 
 const escapeHtml = (s) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+function stopPace() {
+  if (paceTimer != null) {
+    clearTimeout(paceTimer);
+    paceTimer = null;
+  }
+}
+
+function promoteFinal() {
+  committed = liveTarget || live;
+  live = "";
+  liveTarget = "";
+  liveShown = "";
+  pendingFinal = false;
+  render();
+}
+
+function paceTick() {
+  paceTimer = null;
+  const next = nextPacedCaption(live, liveTarget);
+  if (next === live) {
+    if (live !== liveTarget) live = liveTarget;
+    render();
+    if (pendingFinal && live === liveTarget) promoteFinal();
+    return;
+  }
+  live = next;
+  render();
+  if (live === liveTarget) {
+    if (pendingFinal) promoteFinal();
+    return;
+  }
+  paceTimer = setTimeout(paceTick, PACE_WORD_MS);
+}
+
+function startPace() {
+  if (paceTimer != null) return;
+  paceTick();
+}
 
 // The server locks the start of the sentence, so usually only the tail changes:
 // fade it in instead of flashing the entire line.
@@ -47,8 +111,11 @@ function render() {
 function scheduleHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
+    stopPace();
     committed = "";
     live = "";
+    liveTarget = "";
+    pendingFinal = false;
     render();
   }, 10000);
 }
@@ -65,9 +132,12 @@ function connect() {
       return;
     }
     if (msg.type === "clear") {
+      stopPace();
       committed = "";
       live = "";
+      liveTarget = "";
       liveSeq = 0;
+      pendingFinal = false;
       render();
       return;
     }
@@ -75,14 +145,28 @@ function connect() {
       const text = msg.translated || msg.original || "";
       const seq = Number(msg.seq ?? 0);
       if (msg.final) {
-        committed = text;
-        // Clear the live line only if it belongs to this sentence; keep the next one.
-        if (seq >= liveSeq) live = "";
-      } else {
-        live = text;
+        if (seq >= liveSeq) {
+          liveTarget = text;
+          liveSeq = seq;
+          pendingFinal = true;
+          startPace();
+        } else {
+          committed = text;
+          render();
+        }
+      } else if (seq >= liveSeq) {
+        if (pendingFinal && seq > liveSeq) {
+          committed = liveTarget || live;
+          live = "";
+          liveShown = "";
+          pendingFinal = false;
+          render();
+        }
+        liveTarget = text;
         liveSeq = seq;
+        pendingFinal = false;
+        startPace();
       }
-      render();
       scheduleHide();
     }
   };

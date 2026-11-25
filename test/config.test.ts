@@ -9,6 +9,7 @@ const managedVariables = [
   "DRAFT_INTERVAL_MS",
   "DRAFTS_PER_SECOND",
   "FALLBACK_API_KEY",
+  "FIRST_TOKEN_MS",
   "FINAL_API_KEY",
   "LIVE_DRAFTS",
   "OPENAI_API_KEY",
@@ -57,6 +58,15 @@ test("loadConfig accepts a valid minimal environment", () => {
   assert.equal(config.port, 3000);
   assert.equal(config.sttProxy, true);
   assert.equal(config.liveDrafts, true);
+  assert.equal(config.firstTokenMs, 600);
+});
+
+test("loadConfig accepts FIRST_TOKEN_MS", () => {
+  process.env.FIRST_TOKEN_MS = "650";
+  assert.equal(loadConfig().firstTokenMs, 650);
+
+  process.env.FIRST_TOKEN_MS = "10";
+  assert.throws(() => loadConfig(), /FIRST_TOKEN_MS must be an integer/);
 });
 
 test("loadConfig rejects duplicate and malformed room slugs", () => {

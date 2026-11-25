@@ -56,6 +56,217 @@ export type TranslateOptions = {
   prefix?: string;
 };
 
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Aborted"));
+    };
+    if (signal?.aborted) {
+      clearTimeout(timer);
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function linkAbort(parent: AbortSignal | undefined, child: AbortController): void {
+  if (!parent) return;
+  if (parent.aborted) {
+    child.abort(parent.reason);
+    return;
+  }
+  parent.addEventListener("abort", () => child.abort(parent.reason), { once: true });
+}
+
+type AttemptLabel = "preferred" | "fallback";
+
+type TranslateAttempt = {
+  promise: Promise<string>;
+  firstToken: Promise<void>;
+  abort: AbortController;
+};
+
+function startAttempt(
+  config: AppConfig,
+  text: string,
+  direction: Direction,
+  options: TranslateOptions,
+  provider: Provider,
+  timeoutMs: number,
+  label: AttemptLabel,
+  state: { winner: AttemptLabel | null },
+  onFirstToken: () => void
+): TranslateAttempt {
+  const abort = new AbortController();
+  linkAbort(options.signal, abort);
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+
+  let sawToken = false;
+  let resolveFirstToken: () => void = () => {};
+  const firstToken = new Promise<void>((resolve) => {
+    resolveFirstToken = resolve;
+  });
+
+  const promise = translateCaption(config, text, direction, {
+    ...options,
+    provider,
+    signal: abort.signal,
+    onPartial: (partial) => {
+      if (!sawToken) {
+        sawToken = true;
+        if (!state.winner) state.winner = label;
+        resolveFirstToken();
+        onFirstToken();
+      }
+      if (state.winner === label) options.onPartial?.(partial);
+    },
+  }).finally(() => clearTimeout(timer));
+
+  void promise.catch(() => {});
+  return { promise, firstToken, abort };
+}
+
+export type HedgeOptions = TranslateOptions & {
+  fallback?: Provider | null;
+  firstTokenMs: number;
+  timeoutMs: number;
+  fallbackTimeoutMs?: number;
+  skipPreferred?: boolean;
+  onPreferredStall?: (why: string) => void;
+};
+
+// Start the preferred provider immediately. If it produces no token within
+// firstTokenMs, start fallback in parallel and keep whichever streams first.
+export async function translateWithHedge(
+  config: AppConfig,
+  text: string,
+  direction: Direction,
+  options: HedgeOptions
+): Promise<string> {
+  const fallback = options.fallback ?? null;
+  const fallbackTimeoutMs = options.fallbackTimeoutMs ?? options.timeoutMs;
+  const preferred = options.provider ?? primaryProvider(config);
+  const state: { winner: AttemptLabel | null } = { winner: null };
+
+  if (options.skipPreferred) {
+    if (!fallback) {
+      throw new Error("Preferred provider skipped and no fallback is configured");
+    }
+    const attempt = startAttempt(
+      config,
+      text,
+      direction,
+      options,
+      fallback,
+      fallbackTimeoutMs,
+      "fallback",
+      state,
+      () => {}
+    );
+    return attempt.promise;
+  }
+
+  const preferredAttempt = startAttempt(
+    config,
+    text,
+    direction,
+    options,
+    preferred,
+    options.timeoutMs,
+    "preferred",
+    state,
+    () => {}
+  );
+
+  if (!fallback) {
+    const outcome = await Promise.race([
+      preferredAttempt.firstToken.then(() => "token" as const),
+      preferredAttempt.promise.then(
+        () => "done" as const,
+        () => "fail" as const
+      ),
+      abortableDelay(options.firstTokenMs, options.signal).then(() => "stall" as const),
+    ]);
+    if (outcome === "stall") {
+      preferredAttempt.abort.abort();
+      options.onPreferredStall?.("no first token");
+      throw new Error(`No first translation token in ${options.firstTokenMs} ms`);
+    }
+    if (outcome === "fail") options.onPreferredStall?.("error");
+    return preferredAttempt.promise;
+  }
+
+  let outcome: "token" | "done" | "fail" | "stall";
+  try {
+    outcome = await Promise.race([
+      preferredAttempt.firstToken.then(() => "token" as const),
+      preferredAttempt.promise.then(
+        () => "done" as const,
+        () => "fail" as const
+      ),
+      abortableDelay(options.firstTokenMs, options.signal).then(() => "stall" as const),
+    ]);
+  } catch (err) {
+    preferredAttempt.abort.abort();
+    throw err;
+  }
+
+  if (outcome === "token" || outcome === "done") {
+    return preferredAttempt.promise;
+  }
+
+  const why = outcome === "fail" ? "error" : "no first token";
+  options.onPreferredStall?.(why);
+
+  const fallbackAttempt = startAttempt(
+    config,
+    text,
+    direction,
+    options,
+    fallback,
+    fallbackTimeoutMs,
+    "fallback",
+    state,
+    () => {
+      if (state.winner === "fallback") preferredAttempt.abort.abort();
+    }
+  );
+
+  const race = await Promise.race([
+    preferredAttempt.firstToken.then(() => "preferred" as const),
+    fallbackAttempt.firstToken.then(() => "fallback" as const),
+    preferredAttempt.promise.then(
+      () => "preferred" as const,
+      () => "preferred-fail" as const
+    ),
+    fallbackAttempt.promise.then(
+      () => "fallback" as const,
+      () => "fallback-fail" as const
+    ),
+  ]);
+
+  if (race === "preferred") {
+    fallbackAttempt.abort.abort();
+    return preferredAttempt.promise;
+  }
+  if (race === "fallback") {
+    preferredAttempt.abort.abort();
+    return fallbackAttempt.promise;
+  }
+  if (race === "preferred-fail") {
+    preferredAttempt.abort.abort();
+    return fallbackAttempt.promise;
+  }
+  fallbackAttempt.abort.abort();
+  return preferredAttempt.promise;
+}
+
 export async function translateCaption(
   config: AppConfig,
   text: string,
