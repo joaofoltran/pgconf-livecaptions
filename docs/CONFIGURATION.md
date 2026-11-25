@@ -88,7 +88,7 @@ The endpoint must support streamed OpenAI-compatible chat completions.
 The `OPENAI_*` names describe the API protocol used by the client. They do not
 require OpenAI to be the primary provider. For example, when Cerebras is
 primary, `OPENAI_API_KEY` contains the Cerebras key, and the Groq key for the
-default fallback goes in `FALLBACK_API_KEY`.
+recommended fallback goes in `FALLBACK_API_KEY`.
 
 ### Primary provider
 
@@ -149,7 +149,7 @@ A fallback is kept because Cerebras can stall. If Cerebras is silent for
 `FIRST_TOKEN_MS` (default 600 ms), the app starts the fallback in parallel and
 keeps whichever provider streams first. That recovers a stalled caption in
 about one first-token window instead of waiting for the whole request timeout.
-The default fallback runs the same `gpt-oss-120b` model family on Groq, so
+The recommended fallback runs the same `gpt-oss-120b` model family on Groq, so
 wording stays consistent when captions switch providers.
 
 These results are historical and provider performance changes over time. Use
@@ -189,8 +189,8 @@ against this provider. If the preferred provider emits no token within
 `FIRST_TOKEN_MS`, the fallback request starts in parallel and the first
 provider to stream wins; the other request is cancelled. A preferred stream
 that fails at any point continues on the fallback from the text already shown.
-A final whose attempts all failed gets one more fallback attempt before the
-source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
+A final whose attempts all failed gets one more fallback attempt, which must
+start streaming within 1.5 seconds, before the source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
 whole timeout before hedging, because it is chosen for quality, not speed.
 
 A preferred-provider failure is an error response, a timeout, or a lost
@@ -204,14 +204,17 @@ provider again while the rest stay on the fallback. Without a fallback,
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FALLBACK_API_KEY` | empty / disabled | Enables failover. |
-| `FALLBACK_BASE_URL` | `https://api.groq.com/openai/v1` | Fallback API root. |
-| `FALLBACK_MODEL` | `openai/gpt-oss-120b` | Fallback model. |
-| `FALLBACK_EXTRA_BODY` | `{"reasoning_effort":"low"}` with the default model, otherwise empty | JSON fields merged into fallback requests. Set it empty to send none. |
+| `FALLBACK_BASE_URL` | none; required with a key | Fallback API root. Recommended: `https://api.groq.com/openai/v1`. |
+| `FALLBACK_MODEL` | none; required with a key | Fallback model. Recommended: `openai/gpt-oss-120b`. |
+| `FALLBACK_EXTRA_BODY` | empty object | JSON fields merged into fallback requests. Recommended with Groq: `{"reasoning_effort":"low"}`. |
 | `FIRST_TOKEN_MS` | `600` | Milliseconds to wait for the preferred provider's first token before hedging. |
 
-The `reasoning_effort` default applies only while `FALLBACK_MODEL` is unset,
-because other models may reject that field. To keep OpenAI as the fallback,
-set all four values explicitly:
+The fallback base URL and model have no defaults, so a key is never sent to a
+provider it does not belong to. If `FALLBACK_API_KEY` is set without
+`FALLBACK_BASE_URL` or `FALLBACK_MODEL`, the app and the `./deploy.sh`
+configuration check fail at startup and name the missing variable. Extra-body
+fields cannot override `model`, `stream`, `temperature`, `max_tokens`, or the
+messages. To use OpenAI as the fallback instead:
 
 ```dotenv
 FALLBACK_BASE_URL=https://api.openai.com/v1

@@ -65,6 +65,22 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
   return value === "true";
 }
 
+// No defaults: a key for one provider must never be sent to another provider's URL.
+function fallbackProvider() {
+  const apiKey = env("FALLBACK_API_KEY");
+  if (!apiKey) return null;
+  const missing = ["FALLBACK_BASE_URL", "FALLBACK_MODEL"].filter((name) => !env(name));
+  if (missing.length) {
+    throw new Error(`FALLBACK_API_KEY is set but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not`);
+  }
+  return {
+    baseUrl: baseUrlEnv("FALLBACK_BASE_URL", ""),
+    apiKey,
+    model: env("FALLBACK_MODEL"),
+    extraBody: parseJsonObject("FALLBACK_EXTRA_BODY", env("FALLBACK_EXTRA_BODY")),
+  };
+}
+
 function baseUrlEnv(name: string, fallback: string): string {
   const value = (env(name) || fallback).replace(/\/+$/, "");
   let parsed: URL;
@@ -210,21 +226,7 @@ export function loadConfig() {
       : null,
     // Secondary provider hedged against the primary when it stalls or fails.
     // Enabled only when FALLBACK_API_KEY is set.
-    fallback: env("FALLBACK_API_KEY")
-      ? {
-          baseUrl: baseUrlEnv("FALLBACK_BASE_URL", "https://api.groq.com/openai/v1"),
-          apiKey: env("FALLBACK_API_KEY"),
-          model: env("FALLBACK_MODEL") || "openai/gpt-oss-120b",
-          // The default extra body belongs to the default model: other models may
-          // reject reasoning_effort. Set FALLBACK_EXTRA_BODY= to send no extra fields.
-          extraBody: parseJsonObject(
-            "FALLBACK_EXTRA_BODY",
-            process.env.FALLBACK_EXTRA_BODY === undefined && !env("FALLBACK_MODEL")
-              ? '{"reasoning_effort":"low"}'
-              : env("FALLBACK_EXTRA_BODY")
-          ),
-        }
-      : null,
+    fallback: fallbackProvider(),
     openaiServiceTier: env("OPENAI_SERVICE_TIER"),
     dgEndpointing: String(integerEnv("DG_ENDPOINTING", "300", 50, 5000)),
     // "multi" = multilingual Nova-3: accepts PT keyterms and handles Portuguese

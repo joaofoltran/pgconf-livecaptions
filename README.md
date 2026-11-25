@@ -260,7 +260,7 @@ the primary provider's key, not necessarily an OpenAI key.
 ### Recommended setup: Cerebras primary, Groq fallback
 
 Cerebras `gpt-oss-120b` handles normal draft and final translation. Groq
-`openai/gpt-oss-120b` is the default fallback: if Cerebras sends no token within
+`openai/gpt-oss-120b` is the recommended fallback: if Cerebras sends no token within
 `FIRST_TOKEN_MS` (default 600 ms), the app starts Groq in parallel and keeps
 whichever provider streams first.
 
