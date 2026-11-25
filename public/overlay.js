@@ -20,24 +20,16 @@ let paceTimer = null;
 
 const PACE_WORD_MS = 50;
 
-// Keep in sync with public/caption-pace.js (unit tests import that copy).
+// Reveal one word past the part both texts share. A changed or extended word
+// ("Post" to "PostgreSQL") is replaced in place, so the line never blanks.
 function nextPacedCaption(shown, target) {
-  if (target === shown) return shown;
-  if (!target) return "";
-  const targetWords = target.trim().split(/\s+/).filter(Boolean);
-  const shownWords = shown.trim() ? shown.trim().split(/\s+/).filter(Boolean) : [];
+  if (target === shown || !target) return target;
+  const targetWords = target.trim().split(/\s+/);
+  const shownWords = shown.trim().split(/\s+/).filter(Boolean);
   const key = (word) => word.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
   let i = 0;
-  while (
-    i < shownWords.length &&
-    i < targetWords.length &&
-    key(shownWords[i]) === key(targetWords[i])
-  ) {
-    i++;
-  }
-  if (i < shownWords.length) return targetWords.slice(0, i).join(" ");
-  if (i < targetWords.length) return targetWords.slice(0, i + 1).join(" ");
-  return target;
+  while (i < shownWords.length && i < targetWords.length && key(shownWords[i]) === key(targetWords[i])) i++;
+  return i + 1 >= targetWords.length ? target : targetWords.slice(0, i + 1).join(" ");
 }
 
 const escapeHtml = (s) =>
@@ -61,20 +53,10 @@ function promoteFinal() {
 
 function paceTick() {
   paceTimer = null;
-  const next = nextPacedCaption(live, liveTarget);
-  if (next === live) {
-    if (live !== liveTarget) live = liveTarget;
-    render();
-    if (pendingFinal && live === liveTarget) promoteFinal();
-    return;
-  }
-  live = next;
+  live = nextPacedCaption(live, liveTarget);
   render();
-  if (live === liveTarget) {
-    if (pendingFinal) promoteFinal();
-    return;
-  }
-  paceTimer = setTimeout(paceTick, PACE_WORD_MS);
+  if (live !== liveTarget) paceTimer = setTimeout(paceTick, PACE_WORD_MS);
+  else if (pendingFinal) promoteFinal();
 }
 
 function startPace() {
@@ -144,27 +126,17 @@ function connect() {
     if (msg.type === "caption") {
       const text = msg.translated || msg.original || "";
       const seq = Number(msg.seq ?? 0);
-      if (msg.final) {
-        if (seq >= liveSeq) {
-          liveTarget = text;
-          liveSeq = seq;
-          pendingFinal = true;
-          startPace();
-        } else {
+      // A newer sentence must not overwrite a final that is still pacing out.
+      if (pendingFinal && seq > liveSeq) promoteFinal();
+      if (seq < liveSeq) {
+        if (msg.final) {
           committed = text;
           render();
         }
-      } else if (seq >= liveSeq) {
-        if (pendingFinal && seq > liveSeq) {
-          committed = liveTarget || live;
-          live = "";
-          liveShown = "";
-          pendingFinal = false;
-          render();
-        }
+      } else {
         liveTarget = text;
         liveSeq = seq;
-        pendingFinal = false;
+        pendingFinal = Boolean(msg.final);
         startPace();
       }
       scheduleHide();
