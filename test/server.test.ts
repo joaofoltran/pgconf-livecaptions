@@ -184,6 +184,26 @@ test("a draft finishing during flush does not block the next sentence's draft", 
   );
 });
 
+test("a short remark right after a sentence does not drop that sentence's final", async () => {
+  const sentence = "one two three four five six";
+  await scenario(
+    // Only a retranslation of the sentence is extra slow: reusing its draft is the fix.
+    (req) => (req.source === sentence && !req.draft ? { ttftMs: 700, doneMs: 1100 } : { ttftMs: 700, doneMs: 800 }),
+    { FIRST_TOKEN_MS: "1000" },
+    async (app) => {
+      app.send({ type: "interim", text: sentence });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      app.sayFinal(`${sentence}.`);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      app.sayFinal("Okay.");
+      await waitFor("remark final", () => app.captions.some((c) => c.final && c.original === "Okay."), 3000);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const finals = app.captions.filter((c) => c.final).map((c) => c.original);
+      assert.deepEqual(finals, [`${sentence}.`, "Okay."]);
+    }
+  );
+});
+
 test("at DRAFT_INTERVAL_MS=100 a stalled primary is hedged and trips the breaker", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }),

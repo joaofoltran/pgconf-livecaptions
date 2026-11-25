@@ -30,7 +30,8 @@ export type Room = {
   draftTimer: NodeJS.Timeout | null;
   draftsInFlight: Map<
     AbortController,
-    { source: string; promise: Promise<string>; gotToken: boolean; startedAt: number }
+    // awaited: an earlier sentence's flush is waiting on this draft as its final.
+    { source: string; promise: Promise<string>; gotToken: boolean; startedAt: number; awaited: boolean }
   >;
   lastDraft: { source: string; translated: string } | null;
   lastDraftSeq: number;

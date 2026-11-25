@@ -647,7 +647,7 @@ function fireDraft(room: Room): void {
   const context = translationContext(room);
   const startedAt = now;
   const prefix = room.lockedPrefix;
-  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false, startedAt };
+  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false, startedAt, awaited: false };
 
   const promise = hedgedTranslate(room, "draft", primaryProvider(config), DRAFT_TIMEOUT_MS, candidate, direction, {
     context,
@@ -913,12 +913,14 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
       ? [...room.draftsInFlight].find(([, draft]) => normalizeText(draft.source) === wanted)
       : undefined;
   // Retired drafts can no longer render; free their streams for the next sentence.
-  // Each draft's own finally releases its slot.
-  for (const abort of room.draftsInFlight.keys()) {
-    if (abort !== matching?.[0]) abort.abort();
+  // Each draft's own finally releases its slot. A draft an earlier flush awaits
+  // is that sentence's final: aborting it would re-translate it behind this one.
+  for (const [abort, draft] of room.draftsInFlight) {
+    if (abort !== matching?.[0] && !draft.awaited) abort.abort();
   }
   if (matching) {
     const [abort, draft] = matching;
+    draft.awaited = true;
     const budget = config.firstTokenMs + 1500;
     let timer: NodeJS.Timeout | undefined;
     try {

@@ -97,7 +97,7 @@ recommended fallback goes in `FALLBACK_API_KEY`.
 | `OPENAI_API_KEY` | none | Required provider credential. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API root without a trailing slash. |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Model used for drafts and, by default, finals. |
-| `OPENAI_EXTRA_BODY` | empty object | JSON object merged into every request body. |
+| `OPENAI_EXTRA_BODY` | empty object | JSON fields added to every request body; keys that collide with the request's own fields are ignored. |
 | `OPENAI_SERVICE_TIER` | empty | Optional OpenAI service tier, such as `priority`. |
 
 OpenAI example:
@@ -175,7 +175,7 @@ completed phrases use this provider:
 | `FINAL_API_KEY` | empty / disabled | Enables the separate final provider. |
 | `FINAL_BASE_URL` | `https://api.openai.com/v1` | Final provider API root. |
 | `FINAL_MODEL` | `gpt-4.1-mini` | Final-caption model. |
-| `FINAL_EXTRA_BODY` | empty object | JSON fields merged into final requests. |
+| `FINAL_EXTRA_BODY` | empty object | JSON fields added to final requests; colliding keys are ignored. |
 | `FINAL_SERVICE_TIER` | empty | Optional service tier for final requests. |
 
 This mode can improve final quality, but changing providers between a draft and
@@ -206,15 +206,15 @@ provider again while the rest stay on the fallback. Without a fallback,
 | `FALLBACK_API_KEY` | empty / disabled | Enables failover. |
 | `FALLBACK_BASE_URL` | none; required with a key | Fallback API root. Recommended: `https://api.groq.com/openai/v1`. |
 | `FALLBACK_MODEL` | none; required with a key | Fallback model. Recommended: `openai/gpt-oss-120b`. |
-| `FALLBACK_EXTRA_BODY` | empty object | JSON fields merged into fallback requests. Recommended with Groq: `{"reasoning_effort":"low"}`. |
+| `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
 | `FIRST_TOKEN_MS` | `600` | Milliseconds to wait for the preferred provider's first token before hedging. |
 
 The fallback base URL and model have no defaults, so a key is never sent to a
 provider it does not belong to. If `FALLBACK_API_KEY` is set without
 `FALLBACK_BASE_URL` or `FALLBACK_MODEL`, the app and the `./deploy.sh`
 configuration check fail at startup and name the missing variable. Extra-body
-fields cannot override `model`, `stream`, `temperature`, `max_tokens`, or the
-messages. To use OpenAI as the fallback instead:
+keys that collide with `model`, `stream`, `temperature`, `max_tokens`, or
+`messages` are ignored. To use OpenAI as the fallback instead:
 
 ```dotenv
 FALLBACK_BASE_URL=https://api.openai.com/v1

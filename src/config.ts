@@ -71,7 +71,7 @@ function fallbackProvider() {
   if (!apiKey) return null;
   const missing = ["FALLBACK_BASE_URL", "FALLBACK_MODEL"].filter((name) => !env(name));
   if (missing.length) {
-    throw new Error(`FALLBACK_API_KEY is set but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not`);
+    throw new Error(`FALLBACK_API_KEY is set but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not set`);
   }
   return {
     baseUrl: baseUrlEnv("FALLBACK_BASE_URL", ""),
@@ -210,7 +210,7 @@ export function loadConfig() {
     openaiModel: env("OPENAI_MODEL") || "gpt-4.1-mini",
     // Any compatible API (Groq, Cerebras, ...): change the base URL and model.
     openaiBaseUrl: baseUrlEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    // JSON merged into each request body for provider-specific parameters
+    // JSON fields added to each request body (colliding keys are ignored) for provider-specific parameters
     // (for example, {"reasoning_effort":"low"} for Groq gpt-oss models).
     openaiExtraBody: parseJsonObject("OPENAI_EXTRA_BODY", env("OPENAI_EXTRA_BODY")),
     // Hybrid mode: drafts use the fast primary provider while final captions use

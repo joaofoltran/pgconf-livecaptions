@@ -74,10 +74,10 @@ test("loadConfig accepts FIRST_TOKEN_MS", () => {
 
 test("a fallback key without its base URL and model fails at startup", () => {
   process.env.FALLBACK_API_KEY = "fallback-test-key";
-  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_BASE_URL and FALLBACK_MODEL are not/);
+  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_BASE_URL and FALLBACK_MODEL are not set/);
 
   process.env.FALLBACK_BASE_URL = "https://api.groq.com/openai/v1";
-  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_MODEL is not/);
+  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_MODEL is not set/);
 
   process.env.FALLBACK_MODEL = "openai/gpt-oss-120b";
   assert.deepEqual(loadConfig().fallback, {
