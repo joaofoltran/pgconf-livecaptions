@@ -156,6 +156,23 @@ test("a preferred stream failing after its first token continues on the fallback
   assert.equal(retry?.body.reasoning_effort, "low", "fallback extra body is merged into the request");
 });
 
+test("a preferred timeout is reported even if the caller aborts before the fallback answers", async () => {
+  const config = testConfig();
+  mockProviders({ primary: "hang", fallback: { text: "tarde", ttftMs: 5000 } });
+  const abort = new AbortController();
+  const failures: string[] = [];
+  setTimeout(() => abort.abort(), 400);
+  await assert.rejects(
+    hedge(config, {
+      firstTokenMs: 100,
+      timeoutMs: 250,
+      signal: abort.signal,
+      onPreferredFailure: (why) => failures.push(why),
+    })
+  );
+  assert.deepEqual(failures, ["error"]);
+});
+
 test("a caller abort is not reported as a preferred failure", async () => {
   const config = testConfig();
   mockProviders({ primary: "hang" });

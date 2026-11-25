@@ -158,8 +158,10 @@ export async function translateWithHedge(
   }
 
   const preferred = start(options.provider ?? primaryProvider(config), options.timeoutMs);
-  let preferredError: unknown;
-  preferred.promise.catch((err) => (preferredError = err));
+  let preferredLost = false;
+  preferred.promise.catch((err) => {
+    if (!preferredLost) reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
+  });
   let backup: Attempt | null = null;
 
   if (fallback) {
@@ -177,15 +179,16 @@ export async function translateWithHedge(
     clearTimeout(stallTimer);
 
     if (early !== "token" && !callerAborted()) {
-      if (early === "fail") reportFailure("error", preferredError);
       backup = start(fallback, fallbackTimeoutMs);
       await Promise.race([
         preferred.firstToken,
         backup.firstToken,
         Promise.allSettled([preferred.promise, backup.promise]),
       ]);
-      if (state.selected === backup) reportFailure("no first token");
-      else if (!state.selected) reportFailure("error", preferredError);
+      if (state.selected === backup) {
+        preferredLost = true;
+        reportFailure("no first token");
+      }
       if (state.selected !== preferred) preferred.abort();
       if (state.selected !== backup) backup.abort();
     }
@@ -198,9 +201,7 @@ export async function translateWithHedge(
     if (chosen === preferred) options.onPreferredSuccess?.();
     return out;
   } catch (err) {
-    if (callerAborted() || chosen !== preferred) throw err;
-    reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
-    if (!fallback) throw err;
+    if (callerAborted() || chosen !== preferred || !fallback) throw err;
     const retry = start(fallback, fallbackTimeoutMs, {
       ...options,
       prefix: state.emitted.trim() || options.prefix,
