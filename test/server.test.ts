@@ -311,6 +311,23 @@ test("a final gets one more fallback attempt when every attempt failed", async (
   );
 });
 
+test("in a full outage the final retry does not hold the source text back", async () => {
+  let fallbackFinals = 0;
+  await scenario(
+    (req) => (req.provider === "primary" || ++fallbackFinals === 1 ? { status: 500 } : { hang: true }),
+    { LIVE_DRAFTS: "false" },
+    async (app) => {
+      const startedAt = Date.now();
+      app.sayFinal("one two three four");
+      await waitFor("final", () => app.captions.some((c) => c.final), 3000);
+      const final = app.captions.find((c) => c.final)!;
+      assert.equal(final.translated, final.original, "source text as the last resort");
+      const finalMs = final.at - startedAt;
+      assert.ok(finalMs >= 1400 && finalMs < 2500, `final took ${finalMs} ms`);
+    }
+  );
+});
+
 // Headline latency on the real server: rerun with `npx tsx --test test/server.test.ts`
 // and read the LATENCY line. Before the hedge, a stalled primary cost the whole
 // 3.5 s final timeout plus the fallback's own first token.

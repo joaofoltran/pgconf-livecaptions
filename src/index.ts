@@ -37,6 +37,7 @@ import {
 const DRAFT_TIMEOUT_MS = 3000;
 const FINAL_TIMEOUT_MS = 3500;
 const FALLBACK_TIMEOUT_MS = 6000;
+const FINAL_RETRY_FIRST_TOKEN_MS = 1500;
 const SLOW_WARN_MS = 1500;
 
 // Circuit breaker per preferred provider: Cerebras can degrade in bursts (dozens
@@ -630,7 +631,10 @@ function fireDraft(room: Room): void {
   // Canceling the previous draft would leave the display empty: each takes ~1 s
   // while interims arrive faster. Run them in parallel and discard late sequences.
   // With every slot busy, the newest candidate fires when a draft settles.
-  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT && !evictStalledDraft(room, now)) return;
+  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) {
+    evictStalledDraft(room, now);
+    return;
+  }
 
   lastGlobalDraftTs = now;
   room.draftTs = now;
@@ -705,17 +709,16 @@ function fireDraft(room: Room): void {
 }
 
 // A draft with no token after DRAFT_TIMEOUT_MS is stuck on both providers;
-// younger ones may still be waiting for their hedge.
-function evictStalledDraft(room: Room, now: number): boolean {
+// younger ones may still be waiting for their hedge. Its slot frees only when
+// its aborted streams have closed, so one eviction at a time.
+function evictStalledDraft(room: Room, now: number): void {
   let oldest: [AbortController, number] | null = null;
   for (const [abort, draft] of room.draftsInFlight) {
+    if (abort.signal.aborted) return;
     if (draft.gotToken || now - draft.startedAt < DRAFT_TIMEOUT_MS) continue;
     if (!oldest || draft.startedAt < oldest[1]) oldest = [abort, draft.startedAt];
   }
-  if (!oldest) return false;
-  oldest[0].abort();
-  room.draftsInFlight.delete(oldest[0]);
-  return true;
+  oldest?.[0].abort();
 }
 
 const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
@@ -812,15 +815,27 @@ async function translateFinal(
   } catch (err) {
     if (config.fallback) {
       // One more fallback try rides out a single fallback error, which would
-      // otherwise put source text on screen.
+      // otherwise put source text on screen. In a full outage it must not hold
+      // the source text back, so it gets FINAL_RETRY_FIRST_TOKEN_MS to start streaming.
       console.warn(`final retry ${room.id}: fallback ${config.fallback.model}`);
-      return translateWithHedge(config, original, direction, {
-        ...base,
-        fallback: config.fallback,
-        firstTokenMs: config.firstTokenMs,
-        timeoutMs: FALLBACK_TIMEOUT_MS,
-        skipPreferred: true,
-      });
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), FINAL_RETRY_FIRST_TOKEN_MS);
+      try {
+        return await translateWithHedge(config, original, direction, {
+          ...base,
+          signal: abort.signal,
+          onPartial: (partial) => {
+            clearTimeout(timer);
+            onPartial?.(partial);
+          },
+          fallback: config.fallback,
+          firstTokenMs: config.firstTokenMs,
+          timeoutMs: FALLBACK_TIMEOUT_MS,
+          skipPreferred: true,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     }
     if (!isRateLimited(err)) throw err;
   }
