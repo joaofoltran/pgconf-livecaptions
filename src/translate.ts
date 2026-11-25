@@ -243,12 +243,13 @@ export async function translateCaption(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      // Extra fields come first: they must not override the request's own fields.
+      ...provider.extraBody,
       model: provider.model,
       temperature: 0,
       max_tokens: 400,
       stream: true,
       ...(provider.serviceTier ? { service_tier: provider.serviceTier } : {}),
-      ...provider.extraBody,
       messages: [
         {
           role: "system",

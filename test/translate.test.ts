@@ -137,7 +137,10 @@ test("without a fallback, a slow first token is not a timeout", async () => {
 
 test("a preferred stream failing after its first token continues on the fallback", async () => {
   const config = testConfig();
-  config.fallback = { ...config.fallback!, extraBody: { reasoning_effort: "low" } };
+  config.fallback = {
+    ...config.fallback!,
+    extraBody: { reasoning_effort: "low", model: "other", stream: false, temperature: 1, max_tokens: 5 },
+  };
   const mock = mockProviders({
     primary: { text: "Olá", ttftMs: 5, failAfterFirst: true },
     fallback: { text: "Olá mundo", ttftMs: 10 },
@@ -154,6 +157,11 @@ test("a preferred stream failing after its first token continues on the fallback
   const retry = mock.calls.find((c) => c.provider === "fallback");
   assert.match(retry?.system ?? "", /beginning verbatim with "Olá"/);
   assert.equal(retry?.body.reasoning_effort, "low", "fallback extra body is merged into the request");
+  assert.deepEqual(
+    [retry?.body.model, retry?.body.stream, retry?.body.temperature, retry?.body.max_tokens],
+    ["fallback-model", true, 0, 400],
+    "extra body cannot override the request's own fields"
+  );
 });
 
 test("a preferred timeout is reported even if the caller aborts before the fallback answers", async () => {
