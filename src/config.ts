@@ -208,14 +208,21 @@ export function loadConfig() {
           serviceTier: env("FINAL_SERVICE_TIER") || undefined,
         }
       : null,
-    // Secondary provider for final captions when the primary stalls or fails.
+    // Secondary provider hedged against the primary when it stalls or fails.
     // Enabled only when FALLBACK_API_KEY is set.
     fallback: env("FALLBACK_API_KEY")
       ? {
-          baseUrl: baseUrlEnv("FALLBACK_BASE_URL", "https://api.openai.com/v1"),
+          baseUrl: baseUrlEnv("FALLBACK_BASE_URL", "https://api.groq.com/openai/v1"),
           apiKey: env("FALLBACK_API_KEY"),
-          model: env("FALLBACK_MODEL") || "gpt-4.1-mini",
-          extraBody: parseJsonObject("FALLBACK_EXTRA_BODY", env("FALLBACK_EXTRA_BODY")),
+          model: env("FALLBACK_MODEL") || "openai/gpt-oss-120b",
+          // The default extra body belongs to the default model: other models may
+          // reject reasoning_effort. Set FALLBACK_EXTRA_BODY= to send no extra fields.
+          extraBody: parseJsonObject(
+            "FALLBACK_EXTRA_BODY",
+            process.env.FALLBACK_EXTRA_BODY === undefined && !env("FALLBACK_MODEL")
+              ? '{"reasoning_effort":"low"}'
+              : env("FALLBACK_EXTRA_BODY")
+          ),
         }
       : null,
     openaiServiceTier: env("OPENAI_SERVICE_TIER"),

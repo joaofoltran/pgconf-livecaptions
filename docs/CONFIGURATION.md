@@ -87,8 +87,8 @@ The endpoint must support streamed OpenAI-compatible chat completions.
 
 The `OPENAI_*` names describe the API protocol used by the client. They do not
 require OpenAI to be the primary provider. For example, when Cerebras is
-primary, `OPENAI_API_KEY` contains the Cerebras key; the actual OpenAI key goes
-in `FALLBACK_API_KEY`.
+primary, `OPENAI_API_KEY` contains the Cerebras key, and the Groq key for the
+default fallback goes in `FALLBACK_API_KEY`.
 
 ### Primary provider
 
@@ -110,9 +110,7 @@ OPENAI_EXTRA_BODY=
 OPENAI_SERVICE_TIER=
 ```
 
-### Production-tested: Cerebras primary with OpenAI fallback
-
-The original conference production configuration was:
+### Recommended: Cerebras primary with Groq fallback
 
 ```dotenv
 OPENAI_BASE_URL=https://api.cerebras.ai/v1
@@ -121,14 +119,17 @@ OPENAI_MODEL=gpt-oss-120b
 OPENAI_EXTRA_BODY='{"reasoning_effort":"low"}'
 OPENAI_SERVICE_TIER=
 
-FALLBACK_BASE_URL=https://api.openai.com/v1
-FALLBACK_API_KEY=your-openai-key
-FALLBACK_MODEL=gpt-4.1-mini
-FALLBACK_EXTRA_BODY=
+FALLBACK_BASE_URL=https://api.groq.com/openai/v1
+FALLBACK_API_KEY=your-groq-key
+FALLBACK_MODEL=openai/gpt-oss-120b
+FALLBACK_EXTRA_BODY='{"reasoning_effort":"low"}'
 ```
 
-Use valid JSON for `OPENAI_EXTRA_BODY`. Single quotes around the complete JSON
+Use valid JSON for `*_EXTRA_BODY`. Single quotes around the complete JSON
 value work with both the Node dotenv parser and Docker Compose.
+
+The original September 2026 deployment used OpenAI `gpt-4.1-mini` as the
+fallback; the measurements below come from that setup.
 
 #### Why this arrangement
 
@@ -144,11 +145,12 @@ On noisy transcripts from the real event, Cerebras `gpt-oss-120b` with
 normal translation path for captions that needed to grow several times per
 second.
 
-OpenAI was deliberately kept as the fallback rather than removed. If Cerebras
-is silent for `FIRST_TOKEN_MS` (default 600 ms), the app starts the fallback in
-parallel and keeps whichever provider streams first. That recovers a stalled
-caption in about one first-token window instead of waiting for the whole
-request timeout.
+A fallback is kept because Cerebras can stall. If Cerebras is silent for
+`FIRST_TOKEN_MS` (default 600 ms), the app starts the fallback in parallel and
+keeps whichever provider streams first. That recovers a stalled caption in
+about one first-token window instead of waiting for the whole request timeout.
+The default fallback runs the same `gpt-oss-120b` model family on Groq, so
+wording stays consistent when captions switch providers.
 
 These results are historical and provider performance changes over time. Use
 the latency script and real-event recordings to validate the choice for your
@@ -197,21 +199,20 @@ requests use their normal timeouts.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FALLBACK_API_KEY` | empty / disabled | Enables failover. |
-| `FALLBACK_BASE_URL` | `https://api.openai.com/v1` | Fallback API root. |
-| `FALLBACK_MODEL` | `gpt-4.1-mini` | Fallback model. |
-| `FALLBACK_EXTRA_BODY` | empty object | JSON fields merged into fallback requests. |
+| `FALLBACK_BASE_URL` | `https://api.groq.com/openai/v1` | Fallback API root. |
+| `FALLBACK_MODEL` | `openai/gpt-oss-120b` | Fallback model. |
+| `FALLBACK_EXTRA_BODY` | `{"reasoning_effort":"low"}` with the default model, otherwise empty | JSON fields merged into fallback requests. Set it empty to send none. |
 | `FIRST_TOKEN_MS` | `600` | Milliseconds to wait for the preferred provider's first token before hedging. |
 
-Example with a compatible primary and OpenAI fallback:
+The `reasoning_effort` default applies only while `FALLBACK_MODEL` is unset,
+because other models may reject that field. To keep OpenAI as the fallback,
+set all four values explicitly:
 
 ```dotenv
-OPENAI_BASE_URL=https://provider.example.com/v1
-OPENAI_API_KEY=primary-key
-OPENAI_MODEL=fast-model
-
 FALLBACK_BASE_URL=https://api.openai.com/v1
 FALLBACK_API_KEY=sk-fallback-key
 FALLBACK_MODEL=gpt-4.1-mini
+FALLBACK_EXTRA_BODY=
 ```
 
 Provider fallback improves availability but does not make the app independent

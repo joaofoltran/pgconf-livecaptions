@@ -70,14 +70,14 @@ function sseBody(stream: Stream, signal?: AbortSignal): ReadableStream<Uint8Arra
   });
 }
 
-type Call = { provider: "primary" | "fallback"; system: string; aborted: boolean };
+type Call = { provider: "primary" | "fallback"; system: string; body: Record<string, unknown>; aborted: boolean };
 
 function mockProviders(opts: { primary: Stream | "hang"; fallback?: Stream }) {
   const calls: Call[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const provider = String(input).startsWith("https://primary.test/") ? "primary" : "fallback";
     const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
-    const call: Call = { provider, system: body.messages[0].content, aborted: false };
+    const call: Call = { provider, system: body.messages[0].content, body, aborted: false };
     calls.push(call);
     init?.signal?.addEventListener("abort", () => (call.aborted = true));
 
@@ -137,6 +137,7 @@ test("without a fallback, a slow first token is not a timeout", async () => {
 
 test("a preferred stream failing after its first token continues on the fallback", async () => {
   const config = testConfig();
+  config.fallback = { ...config.fallback!, extraBody: { reasoning_effort: "low" } };
   const mock = mockProviders({
     primary: { text: "Olá", ttftMs: 5, failAfterFirst: true },
     fallback: { text: "Olá mundo", ttftMs: 10 },
@@ -152,6 +153,7 @@ test("a preferred stream failing after its first token continues on the fallback
   assert.deepEqual(failures, ["error after first token"], "counted once toward the breaker");
   const retry = mock.calls.find((c) => c.provider === "fallback");
   assert.match(retry?.system ?? "", /beginning verbatim with "Olá"/);
+  assert.equal(retry?.body.reasoning_effort, "low", "fallback extra body is merged into the request");
 });
 
 test("a caller abort is not reported as a preferred failure", async () => {

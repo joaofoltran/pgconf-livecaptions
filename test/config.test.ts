@@ -9,6 +9,9 @@ const managedVariables = [
   "DRAFT_INTERVAL_MS",
   "DRAFTS_PER_SECOND",
   "FALLBACK_API_KEY",
+  "FALLBACK_BASE_URL",
+  "FALLBACK_EXTRA_BODY",
+  "FALLBACK_MODEL",
   "FIRST_TOKEN_MS",
   "FINAL_API_KEY",
   "LIVE_DRAFTS",
@@ -67,6 +70,23 @@ test("loadConfig accepts FIRST_TOKEN_MS", () => {
 
   process.env.FIRST_TOKEN_MS = "10";
   assert.throws(() => loadConfig(), /FIRST_TOKEN_MS must be an integer/);
+});
+
+test("fallback defaults keep the extra body tied to the default model", () => {
+  process.env.FALLBACK_API_KEY = "fallback-test-key";
+  assert.deepEqual(loadConfig().fallback, {
+    baseUrl: "https://api.groq.com/openai/v1",
+    apiKey: "fallback-test-key",
+    model: "openai/gpt-oss-120b",
+    extraBody: { reasoning_effort: "low" },
+  });
+
+  process.env.FALLBACK_EXTRA_BODY = "";
+  assert.deepEqual(loadConfig().fallback?.extraBody, {}, "an explicit empty value sends nothing");
+
+  delete process.env.FALLBACK_EXTRA_BODY;
+  process.env.FALLBACK_MODEL = "gpt-4.1-mini";
+  assert.deepEqual(loadConfig().fallback?.extraBody, {}, "another model does not inherit reasoning_effort");
 });
 
 test("loadConfig rejects duplicate and malformed room slugs", () => {
