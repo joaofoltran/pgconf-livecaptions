@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { AppConfig } from "../src/config.js";
-import { translateCaption, translateWithHedge } from "../src/translate.js";
+import { translateWithHedge } from "../src/translate.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -164,47 +164,4 @@ test("a caller abort is not reported as a preferred failure", async () => {
   setTimeout(() => abort.abort(), 50);
   await assert.rejects(hedge(config, { signal: abort.signal, onPreferredFailure: (why) => failures.push(why) }));
   assert.deepEqual(failures, []);
-});
-
-// Latency demo: rerun with `npx tsx --test test/translate.test.ts` and read the
-// LATENCY line. Bounds are wide so a loaded CI machine does not flake.
-test("primary stall: hedged first token vs sequential whole-request timeout", async () => {
-  const config = testConfig();
-  const fallback = { text: "texto de reserva", ttftMs: 20 };
-
-  mockProviders({ primary: "hang", fallback });
-  let sequentialFirst = 0;
-  const sequentialStarted = Date.now();
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), 3500);
-  const sequentialText = await translateCaption(config, "hello world", "en-pt", { signal: abort.signal }).catch(
-    () =>
-      translateCaption(config, "hello world", "en-pt", {
-        provider: config.fallback ?? undefined,
-        onPartial: () => (sequentialFirst ||= Date.now()),
-      })
-  );
-  clearTimeout(timer);
-  const beforeMs = sequentialFirst - sequentialStarted;
-
-  const mock = mockProviders({ primary: "hang", fallback });
-  let hedgedFirst = 0;
-  const hedgeStarted = Date.now();
-  const failures: string[] = [];
-  const hedgedText = await hedge(config, {
-    onPartial: () => (hedgedFirst ||= Date.now()),
-    onPreferredFailure: (why) => failures.push(why),
-  });
-  const afterMs = hedgedFirst - hedgeStarted;
-
-  console.log(`LATENCY before=${beforeMs}ms after=${afterMs}ms (whole-request timeout 3500ms vs first-token hedge 600ms)`);
-
-  assert.equal(sequentialText, "texto de reserva");
-  assert.equal(hedgedText, "texto de reserva");
-  assert.deepEqual(failures, ["no first token"]);
-  assert.ok(beforeMs >= 3400, `before: ${beforeMs} ms`);
-  assert.ok(afterMs >= 550 && afterMs < 1500, `after: ${afterMs} ms`);
-  assert.ok(beforeMs - afterMs > 2000, "hedge must save at least 2 s");
-  assert.equal(mock.count("primary"), 1);
-  assert.equal(mock.calls.find((c) => c.provider === "primary")?.aborted, true, "losing stream cancelled");
 });

@@ -28,9 +28,14 @@ export type Room = {
   draftSource: string;
   draftCandidate: string;
   draftTimer: NodeJS.Timeout | null;
-  draftsInFlight: Map<AbortController, { source: string; promise: Promise<string>; gotToken: boolean }>;
+  draftsInFlight: Map<
+    AbortController,
+    { source: string; promise: Promise<string>; gotToken: boolean; startedAt: number }
+  >;
   lastDraft: { source: string; translated: string } | null;
   lastDraftSeq: number;
+  // Bumped on every flush: a draft from an earlier sentence must not touch draft state.
+  sentence: number;
   // Start of the current sentence's translation repeated in two consecutive drafts:
   // lock it and have the model continue from there so the live line only grows.
   lockedPrefix: string;
@@ -65,6 +70,7 @@ export function createRoom(id: string, token: string): Room {
     draftsInFlight: new Map(),
     lastDraft: null,
     lastDraftSeq: 0,
+    sentence: 0,
     lockedPrefix: "",
     renderedFinalSeq: 0,
     dg: null,

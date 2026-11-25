@@ -442,8 +442,9 @@ and account shortly before the event.
 ### Translation becomes slow
 
 1. Compare WebSocket RTT and end-to-final latency with the latency script.
-2. Look for timeout, hedge, circuit-breaker, fallback, and rate-limit log entries.
-3. If hedges fire on healthy traffic, raise `FIRST_TOKEN_MS` slightly.
+2. Look for timeout, `no first token`, `degraded` (circuit breaker), fallback,
+   and rate-limit log entries.
+3. If `no first token` appears on healthy traffic, raise `FIRST_TOKEN_MS` slightly.
 4. Lower `DRAFTS_PER_SECOND`.
 5. Increase `DRAFT_INTERVAL_MS`.
 6. Temporarily set `LIVE_DRAFTS=false` if final captions remain healthy.

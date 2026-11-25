@@ -71,12 +71,18 @@ function hedgedTranslate(
     ...options,
     provider: preferred,
     fallback,
-    firstTokenMs: config.firstTokenMs,
+    // A FINAL_* provider is chosen for quality, not speed: give it its whole timeout.
+    firstTokenMs: preferred === config.finalProvider ? timeoutMs : config.firstTokenMs,
     timeoutMs,
     fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
     skipPreferred: route === "fallback",
-    onPreferredFailure: (why) => {
-      console.warn(`${kind} ${room.id}: ${preferred.model} ${why}${fallback ? `; using ${fallback.model}` : ""}`);
+    onPreferredFailure: (why, err) => {
+      const detail = err instanceof Error ? ` (${err.message.slice(0, 120)})` : "";
+      console.warn(
+        `${kind} ${room.id}: ${preferred.model} ${why}${detail}${fallback ? `; using ${fallback.model}` : ""}`
+      );
+      // Drafts run several per second, so their 429s alone would trip a healthy provider.
+      if (kind === "draft" && isRateLimited(err)) return;
       if (breaker?.fail()) {
         console.warn(
           `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${BREAKER_OPEN_MS / 1000} s`
@@ -621,14 +627,10 @@ function fireDraft(room: Room): void {
     scheduleDraft(room, wait);
     return;
   }
-  // A draft still waiting for its first token means the provider is slow, and
-  // another request would stall behind it. Coalesce instead: the newest candidate
-  // fires when a draft streams its first token or settles. Slots are released
-  // only when a draft settles, so a hedge always gets the chance to fire.
-  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) return;
-  for (const draft of room.draftsInFlight.values()) {
-    if (!draft.gotToken) return;
-  }
+  // Canceling the previous draft would leave the display empty: each takes ~1 s
+  // while interims arrive faster. Run them in parallel and discard late sequences.
+  // With every slot busy, the newest candidate fires when a draft settles.
+  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT && !evictStalledDraft(room, now)) return;
 
   lastGlobalDraftTs = now;
   room.draftTs = now;
@@ -636,11 +638,12 @@ function fireDraft(room: Room): void {
 
   const abort = new AbortController();
   const seq = ++room.seq;
+  const sentence = room.sentence;
   const direction = room.direction;
   const context = translationContext(room);
   const startedAt = now;
   const prefix = room.lockedPrefix;
-  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false };
+  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false, startedAt };
 
   const promise = hedgedTranslate(room, "draft", primaryProvider(config), DRAFT_TIMEOUT_MS, candidate, direction, {
     context,
@@ -648,9 +651,7 @@ function fireDraft(room: Room): void {
     signal: abort.signal,
     prefix,
     onPartial: () => {
-      if (inFlight.gotToken) return;
       inFlight.gotToken = true;
-      fireDraft(room);
     },
   }).then(capitalizeFirst);
   inFlight.promise = promise;
@@ -662,7 +663,7 @@ function fireDraft(room: Room): void {
     .then((translated) => {
       const took = Date.now() - startedAt;
       if (took > SLOW_WARN_MS) console.warn(`draft lento ${room.id}: ${took} ms`);
-      if (seq <= room.lastDraftSeq) return;
+      if (sentence !== room.sentence || seq <= room.lastDraftSeq) return;
 
       const previous = room.lastDraft?.translated ?? null;
       // Flush took ownership of the sentence after this draft started: do not render it.
@@ -691,6 +692,10 @@ function fireDraft(room: Room): void {
         console.warn("draft rate limited");
         return;
       }
+      if (isAbortError(err)) {
+        console.warn(`draft timeout ${room.id}`);
+        return;
+      }
       console.error("draft failed", err);
     })
     .finally(() => {
@@ -698,6 +703,22 @@ function fireDraft(room: Room): void {
       fireDraft(room);
     });
 }
+
+// A draft with no token after DRAFT_TIMEOUT_MS is stuck on both providers;
+// younger ones may still be waiting for their hedge.
+function evictStalledDraft(room: Room, now: number): boolean {
+  let oldest: [AbortController, number] | null = null;
+  for (const [abort, draft] of room.draftsInFlight) {
+    if (draft.gotToken || now - draft.startedAt < DRAFT_TIMEOUT_MS) continue;
+    if (!oldest || draft.startedAt < oldest[1]) oldest = [abort, draft.startedAt];
+  }
+  if (!oldest) return false;
+  oldest[0].abort();
+  room.draftsInFlight.delete(oldest[0]);
+  return true;
+}
+
+const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
 
 function abortDrafts(room: Room): void {
   for (const abort of room.draftsInFlight.keys()) {
@@ -781,20 +802,27 @@ async function translateFinal(
   // Its timeout is looser because it delays only consolidation, not the live line.
   const preferred = config.finalProvider ?? primaryProvider(config);
   const timeoutMs = config.finalProvider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
-  const run = () =>
-    hedgedTranslate(room, "final", preferred, timeoutMs, original, direction, {
-      context,
-      onPartial,
-      prefix,
-      unfinished,
-    });
+  const base = { context, onPartial, prefix, unfinished };
+  const run = () => hedgedTranslate(room, "final", preferred, timeoutMs, original, direction, base);
   try {
     const out = await run();
     const took = Date.now() - startedAt;
     if (took > SLOW_WARN_MS) console.warn(`final lento ${room.id}: ${took} ms`);
     return out;
   } catch (err) {
-    if (!isRateLimited(err) || config.fallback) throw err;
+    if (config.fallback) {
+      // One more fallback try rides out a single fallback error, which would
+      // otherwise put source text on screen.
+      console.warn(`final retry ${room.id}: fallback ${config.fallback.model}`);
+      return translateWithHedge(config, original, direction, {
+        ...base,
+        fallback: config.fallback,
+        firstTokenMs: config.firstTokenMs,
+        timeoutMs: FALLBACK_TIMEOUT_MS,
+        skipPreferred: true,
+      });
+    }
+    if (!isRateLimited(err)) throw err;
   }
 
   let lastErr: unknown;
@@ -835,12 +863,13 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   const seq = ++room.seq;
   // Drafts started before this final belong to the closed sentence: none may
   // render or become lastDraft, or the next sentence's draft hits the shrink guard.
-  room.lastDraftSeq = seq;
+  room.sentence++;
   const context = translationContext(room);
 
-  // Stream the final onto the live line even while drafts are enabled, so a
-  // fallback sentence appears word by word instead of arriving in one dump.
+  // Stream the final word by word onto an empty live line. Over a visible draft,
+  // the final replaces it in one step: its first partials would erase the draft.
   const onPartial = (partial: string) => {
+    if (room.renderedSeq !== seq && room.renderedSeq > room.renderedFinalSeq) return;
     emitCaption(room, seq, {
       type: "caption",
       seq,
@@ -875,13 +904,18 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   }
   if (matching) {
     const [abort, draft] = matching;
+    const budget = config.firstTokenMs + 1500;
     let timer: NodeJS.Timeout | undefined;
     try {
-      // Do not wait for this draft if it is stalled at the provider.
+      // Do not wait for this draft if it is stalled at the provider. One that is
+      // already streaming is nearly done, so give it up to twice the budget.
       reusable = await Promise.race([
         draft.promise,
         new Promise<null>((resolve) => {
-          timer = setTimeout(() => resolve(null), config.firstTokenMs + 1500);
+          timer = setTimeout(() => {
+            if (!draft.gotToken) return resolve(null);
+            timer = setTimeout(() => resolve(null), budget);
+          }, budget);
         }),
       ]);
     } catch {
@@ -905,7 +939,8 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
       room.lastTranslation = translated;
     } catch (err) {
       // Only here does the display show source-language text as a last resort.
-      console.error("translate failed", err);
+      if (isAbortError(err)) console.error(`translate failed ${room.id}: timeout`);
+      else console.error("translate failed", err);
       if (ws) sendJson(ws, { type: "translate_error" });
     }
   }

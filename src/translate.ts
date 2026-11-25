@@ -115,16 +115,17 @@ export type HedgeOptions = TranslateOptions & {
   timeoutMs: number;
   fallbackTimeoutMs?: number;
   skipPreferred?: boolean;
-  // Called at most once per call, when the preferred provider stalls or fails.
-  // Caller aborts and cancelled losing streams are not failures.
-  onPreferredFailure?: (why: string) => void;
+  // Called at most once per call: when the preferred provider rejects, or when it
+  // loses the first-token race to the fallback. A hedge the preferred provider
+  // still wins is not a failure, and neither are caller aborts.
+  onPreferredFailure?: (why: string, err?: unknown) => void;
   onPreferredSuccess?: () => void;
 };
 
 // Start the preferred provider immediately. If it streams no token within
 // firstTokenMs, start the fallback in parallel and keep whichever streams first.
-// If the selected preferred stream fails after its first token, continue on the
-// fallback from the text already emitted.
+// Whenever the preferred stream fails, continue on the fallback from the text
+// already emitted.
 export async function translateWithHedge(
   config: AppConfig,
   text: string,
@@ -136,10 +137,10 @@ export async function translateWithHedge(
   const callerAborted = () => options.signal?.aborted === true;
   // Only the selected stream reaches onPartial; the first to emit a token is selected.
   const state = { selected: null as Attempt | null, emitted: "", reported: false };
-  const reportFailure = (why: string) => {
+  const reportFailure = (why: string, err?: unknown) => {
     if (state.reported || callerAborted()) return;
     state.reported = true;
-    options.onPreferredFailure?.(why);
+    options.onPreferredFailure?.(why, err);
   };
   const start = (provider: Provider, timeoutMs: number, opts: TranslateOptions = options) => {
     const attempt: Attempt = startAttempt(config, text, direction, opts, provider, timeoutMs, (partial) => {
@@ -157,6 +158,8 @@ export async function translateWithHedge(
   }
 
   const preferred = start(options.provider ?? primaryProvider(config), options.timeoutMs);
+  let preferredError: unknown;
+  preferred.promise.catch((err) => (preferredError = err));
   let backup: Attempt | null = null;
 
   if (fallback) {
@@ -174,18 +177,21 @@ export async function translateWithHedge(
     clearTimeout(stallTimer);
 
     if (early !== "token" && !callerAborted()) {
-      reportFailure(early === "stall" ? "no first token" : "error");
+      if (early === "fail") reportFailure("error", preferredError);
       backup = start(fallback, fallbackTimeoutMs);
       await Promise.race([
         preferred.firstToken,
         backup.firstToken,
         Promise.allSettled([preferred.promise, backup.promise]),
       ]);
+      if (state.selected === backup) reportFailure("no first token");
+      else if (!state.selected) reportFailure("error", preferredError);
       if (state.selected !== preferred) preferred.abort();
       if (state.selected !== backup) backup.abort();
     }
   }
 
+  // When both providers failed, backup's error is the one thrown; preferred's was reported.
   const chosen = state.selected ?? backup ?? preferred;
   try {
     const out = await chosen.promise;
@@ -193,8 +199,8 @@ export async function translateWithHedge(
     return out;
   } catch (err) {
     if (callerAborted() || chosen !== preferred) throw err;
-    reportFailure(preferred.hasToken() ? "error after first token" : "error");
-    if (!fallback || !preferred.hasToken()) throw err;
+    reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
+    if (!fallback) throw err;
     const retry = start(fallback, fallbackTimeoutMs, {
       ...options,
       prefix: state.emitted.trim() || options.prefix,

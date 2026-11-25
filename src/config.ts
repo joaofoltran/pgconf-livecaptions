@@ -234,7 +234,7 @@ export function loadConfig() {
     // the VPS is close to Deepgram/OpenAI). false = the browser connects directly.
     sttProxy: booleanEnv("STT_PROXY", "true"),
     liveDrafts: booleanEnv("LIVE_DRAFTS", "true"),
-    // Abort a silent preferred provider and start fallback if set.
+    // With a fallback, start it in parallel if the preferred provider streams no token by then.
     firstTokenMs: integerEnv("FIRST_TOKEN_MS", "600", 50, 5_000),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
     // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.

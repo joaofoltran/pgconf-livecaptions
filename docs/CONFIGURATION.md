@@ -187,14 +187,19 @@ real-event transcripts before enabling it.
 When `FALLBACK_API_KEY` is present, the server hedges draft and final captions
 against this provider. If the preferred provider emits no token within
 `FIRST_TOKEN_MS`, the fallback request starts in parallel and the first
-provider to stream wins; the other request is cancelled. A stream that fails
-after it started continues on the fallback from the text already shown.
+provider to stream wins; the other request is cancelled. A preferred stream
+that fails at any point continues on the fallback from the text already shown.
+A final whose attempts all failed gets one more fallback attempt before the
+source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
+whole timeout before hedging, because it is chosen for quality, not speed.
 
-Two preferred-provider failures within 15 seconds open a circuit breaker for
-that provider: its drafts and finals go straight to the fallback for 45 seconds.
-After that, one probe request tries the preferred provider again while the rest
-stay on the fallback. Without a fallback, `FIRST_TOKEN_MS` has no effect and
-requests use their normal timeouts.
+A preferred-provider failure is an error response, a timeout, or a lost
+first-token race; a hedge the preferred provider still wins does not count, and
+neither do HTTP 429 responses to drafts. Two failures within 15 seconds open a
+circuit breaker for that provider: its drafts and finals go straight to the
+fallback for 45 seconds. After that, one probe request tries the preferred
+provider again while the rest stay on the fallback. Without a fallback,
+`FIRST_TOKEN_MS` has no effect and requests use their normal timeouts.
 
 | Variable | Default | Description |
 | --- | --- | --- |
