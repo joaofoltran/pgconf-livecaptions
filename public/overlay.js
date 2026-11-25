@@ -20,16 +20,16 @@ let paceTimer = null;
 
 const PACE_WORD_MS = 50;
 
-// Reveal one word past the part both texts share. A changed or extended word
-// ("Post" to "PostgreSQL") is replaced in place, so the line never blanks.
+// Words already on screen are revised in place ("Post" to "PostgreSQL"), so the
+// line never shrinks to retype them. New words appear one per tick, several when
+// far behind so a large chunk does not trail the speaker.
 function nextPacedCaption(shown, target) {
   if (target === shown || !target) return target;
   const targetWords = target.trim().split(/\s+/);
-  const shownWords = shown.trim().split(/\s+/).filter(Boolean);
-  const key = (word) => word.replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
-  let i = 0;
-  while (i < shownWords.length && i < targetWords.length && key(shownWords[i]) === key(targetWords[i])) i++;
-  return i + 1 >= targetWords.length ? target : targetWords.slice(0, i + 1).join(" ");
+  const shownCount = shown.trim().split(/\s+/).filter(Boolean).length;
+  const behind = targetWords.length - shownCount;
+  const n = shownCount + (behind > 8 ? Math.ceil(behind / 4) : 1);
+  return n >= targetWords.length ? target : targetWords.slice(0, n).join(" ");
 }
 
 const escapeHtml = (s) =>
@@ -126,13 +126,13 @@ function connect() {
     if (msg.type === "caption") {
       const text = msg.translated || msg.original || "";
       const seq = Number(msg.seq ?? 0);
-      // A newer sentence must not overwrite a final that is still pacing out.
-      if (pendingFinal && seq > liveSeq) promoteFinal();
-      if (seq < liveSeq) {
-        if (msg.final) {
-          committed = text;
-          render();
-        }
+      // Any other sequence is a new sentence; it must not overwrite a final that is
+      // still pacing out. Non-finals are always accepted: the server orders them,
+      // and after a server restart their sequence numbers start over.
+      if (pendingFinal && seq !== liveSeq) promoteFinal();
+      if (msg.final && seq < liveSeq) {
+        committed = text;
+        render();
       } else {
         liveTarget = text;
         liveSeq = seq;

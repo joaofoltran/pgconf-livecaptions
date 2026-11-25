@@ -83,9 +83,31 @@ test("a newer final does not drop an older final that is still pacing", () => {
   assert.equal(overlay.committed(), "segunda frase");
 });
 
-test("extending the last word continues the line instead of blanking it", () => {
+test("revised words change in place instead of shrinking the line", () => {
   const overlay = loadOverlay();
   overlay.caption(1, "Post");
   overlay.caption(2, "PostgreSQL é rápido");
-  assert.equal(overlay.live(), "PostgreSQL");
+  assert.equal(overlay.live(), "PostgreSQL é");
+  overlay.caption(3, "um dois três quatro cinco seis");
+  words(6);
+  overlay.caption(4, "um DOIS três quatro cinco seis sete.", true);
+  assert.equal(overlay.committed(), "um DOIS três quatro cinco seis sete.");
+});
+
+test("a large chunk far behind is revealed several words per tick", () => {
+  const overlay = loadOverlay();
+  const chunk = Array.from({ length: 40 }, (_, i) => `p${i}`).join(" ");
+  overlay.caption(1, chunk);
+  words(14);
+  assert.equal(overlay.live(), chunk);
+});
+
+test("after a server restart, drafts with restarted sequence numbers are shown", () => {
+  const overlay = loadOverlay();
+  overlay.caption(500, "frase antiga", true);
+  words(2);
+  overlay.caption(1, "nova frase");
+  words(2);
+  assert.equal(overlay.committed(), "frase antiga");
+  assert.equal(overlay.live(), "nova frase");
 });
