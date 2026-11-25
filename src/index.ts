@@ -23,7 +23,14 @@ import {
   type CaptionLine,
   type Room,
 } from "./rooms.js";
-import { isRateLimited, translateWithHedge } from "./translate.js";
+import { CircuitBreaker } from "./breaker.js";
+import {
+  isRateLimited,
+  primaryProvider,
+  translateWithHedge,
+  type Provider,
+  type TranslateOptions,
+} from "./translate.js";
 
 // A provider that stalls without an error freezes the display: in-flight drafts
 // occupy the queue and the final waits indefinitely. Short timeouts restore control.
@@ -32,30 +39,56 @@ const FINAL_TIMEOUT_MS = 3500;
 const FALLBACK_TIMEOUT_MS = 6000;
 const SLOW_WARN_MS = 1500;
 
-// Circuit breaker: Cerebras can degrade in bursts (dozens of timeouts in seconds).
-// After two failures in the window, route drafts and finals to the fallback
-// temporarily before trying the primary provider again.
-const BREAKER_FAILURES = 2;
-const BREAKER_WINDOW_MS = 15000;
+// Circuit breaker per preferred provider: Cerebras can degrade in bursts (dozens
+// of timeouts in seconds). Two failures in 15 s route its traffic to the fallback
+// for 45 s, then a single probe decides whether to return.
 const BREAKER_OPEN_MS = 45000;
-const breaker = { failures: [] as number[], openUntil: 0 };
+const breakers = new Map<string, CircuitBreaker>();
 
-function primaryDegraded(): boolean {
-  return Boolean(config.fallback) && Date.now() < breaker.openUntil;
+function breakerFor(provider: Provider): CircuitBreaker {
+  const key = `${provider.baseUrl} ${provider.model}`;
+  let breaker = breakers.get(key);
+  if (!breaker) {
+    breaker = new CircuitBreaker(2, 15000, BREAKER_OPEN_MS);
+    breakers.set(key, breaker);
+  }
+  return breaker;
 }
 
-function notePrimaryFailure(why: string): void {
-  if (!config.fallback) return;
-  const now = Date.now();
-  breaker.failures = breaker.failures.filter((t) => now - t < BREAKER_WINDOW_MS);
-  breaker.failures.push(now);
-  if (breaker.failures.length >= BREAKER_FAILURES && now >= breaker.openUntil) {
-    breaker.openUntil = now + BREAKER_OPEN_MS;
-    breaker.failures = [];
-    console.warn(
-      `preferred provider degraded (${why}); drafts and finals on fallback ${config.fallback.model} for ${BREAKER_OPEN_MS / 1000} s`
-    );
+function hedgedTranslate(
+  room: Room,
+  kind: "draft" | "final",
+  preferred: Provider,
+  timeoutMs: number,
+  text: string,
+  direction: Direction,
+  options: TranslateOptions
+): Promise<string> {
+  const fallback = config.fallback;
+  const breaker = fallback ? breakerFor(preferred) : null;
+  const route = breaker?.route() ?? "preferred";
+  const promise = translateWithHedge(config, text, direction, {
+    ...options,
+    provider: preferred,
+    fallback,
+    firstTokenMs: config.firstTokenMs,
+    timeoutMs,
+    fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
+    skipPreferred: route === "fallback",
+    onPreferredFailure: (why) => {
+      console.warn(`${kind} ${room.id}: ${preferred.model} ${why}${fallback ? `; using ${fallback.model}` : ""}`);
+      if (breaker?.fail()) {
+        console.warn(
+          `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${BREAKER_OPEN_MS / 1000} s`
+        );
+      }
+    },
+    onPreferredSuccess: () => breaker?.succeed(),
+  });
+  if (route === "probe") {
+    void promise.catch(() => {}).finally(() => breaker?.release());
   }
+  return promise;
 }
 
 // Keep TLS connections to OpenAI/Deepgram alive between sentences: the default
@@ -575,22 +608,6 @@ function scheduleDraft(room: Room, delayMs: number): void {
   }, Math.max(25, delayMs));
 }
 
-function abortOldestStalledDraft(room: Room): boolean {
-  let oldest: AbortController | null = null;
-  let oldestStarted = Infinity;
-  for (const [abort, draft] of room.draftsInFlight) {
-    if (draft.gotToken) continue;
-    if (draft.startedAt < oldestStarted) {
-      oldest = abort;
-      oldestStarted = draft.startedAt;
-    }
-  }
-  if (!oldest) return false;
-  oldest.abort();
-  room.draftsInFlight.delete(oldest);
-  return true;
-}
-
 function fireDraft(room: Room): void {
   const candidate = room.draftCandidate;
   if (!candidate || candidate === room.draftSource) return;
@@ -604,11 +621,13 @@ function fireDraft(room: Room): void {
     scheduleDraft(room, wait);
     return;
   }
-  // Canceling a draft that already has tokens would flash the display empty.
-  // A silent stalled request only occupies a slot: drop the oldest of those.
-  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT && !abortOldestStalledDraft(room)) {
-    scheduleDraft(room, config.draftIntervalMs);
-    return;
+  // A draft still waiting for its first token means the provider is slow, and
+  // another request would stall behind it. Coalesce instead: the newest candidate
+  // fires when a draft streams its first token or settles. Slots are released
+  // only when a draft settles, so a hedge always gets the chance to fire.
+  if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) return;
+  for (const draft of room.draftsInFlight.values()) {
+    if (!draft.gotToken) return;
   }
 
   lastGlobalDraftTs = now;
@@ -616,30 +635,22 @@ function fireDraft(room: Room): void {
   room.draftSource = candidate;
 
   const abort = new AbortController();
-  const degraded = primaryDegraded();
   const seq = ++room.seq;
   const direction = room.direction;
   const context = translationContext(room);
   const startedAt = now;
   const prefix = room.lockedPrefix;
-  const inFlight = { source: candidate, promise: Promise.resolve(""), startedAt, gotToken: false };
+  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false };
 
-  const promise = translateWithHedge(config, candidate, direction, {
+  const promise = hedgedTranslate(room, "draft", primaryProvider(config), DRAFT_TIMEOUT_MS, candidate, direction, {
     context,
     unfinished: true,
     signal: abort.signal,
     prefix,
-    fallback: config.fallback,
-    firstTokenMs: config.firstTokenMs,
-    timeoutMs: DRAFT_TIMEOUT_MS,
-    fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
-    skipPreferred: degraded,
     onPartial: () => {
+      if (inFlight.gotToken) return;
       inFlight.gotToken = true;
-    },
-    onPreferredStall: (why) => {
-      if (!degraded) notePrimaryFailure(`draft ${why}`);
-      console.warn(`draft hedge ${room.id}: ${why}`);
+      fireDraft(room);
     },
   }).then(capitalizeFirst);
   inFlight.promise = promise;
@@ -684,6 +695,7 @@ function fireDraft(room: Room): void {
     })
     .finally(() => {
       room.draftsInFlight.delete(abort);
+      fireDraft(room);
     });
 }
 
@@ -752,12 +764,6 @@ function advanceLock(room: Room, previous: string | null, shown: string): void {
   if (startsWithWords(candidate, room.lockedPrefix)) room.lockedPrefix = candidate;
 }
 
-function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), ms);
-  return run(abort.signal).finally(() => clearTimeout(timer));
-}
-
 // The final must not remain stuck on a stalled provider or fall back to source
 // text after a transient 429. Hedge the preferred provider against fallback;
 // without a fallback, retry the preferred provider after a 429 before giving up.
@@ -773,28 +779,17 @@ async function translateFinal(
   const startedAt = Date.now();
   // In hybrid mode, finals use another, slower but higher-quality provider.
   // Its timeout is looser because it delays only consolidation, not the live line.
-  const degraded = primaryDegraded();
-  const preferred = degraded ? undefined : config.finalProvider ?? undefined;
-  const timeoutMs = preferred ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
-  const base = { context, onPartial, prefix, unfinished };
-  try {
-    const out = await translateWithHedge(config, original, direction, {
-      ...base,
-      provider: preferred,
-      fallback: config.fallback,
-      firstTokenMs: config.firstTokenMs,
-      timeoutMs,
-      fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
-      skipPreferred: degraded,
-      onPreferredStall: (why) => {
-        if (!degraded) notePrimaryFailure(`final ${why}`);
-        if (config.fallback) {
-          console.warn(
-            `final hedge ${room.id}: ${why}; fallback ${config.fallback.model}`
-          );
-        }
-      },
+  const preferred = config.finalProvider ?? primaryProvider(config);
+  const timeoutMs = config.finalProvider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
+  const run = () =>
+    hedgedTranslate(room, "final", preferred, timeoutMs, original, direction, {
+      context,
+      onPartial,
+      prefix,
+      unfinished,
     });
+  try {
+    const out = await run();
     const took = Date.now() - startedAt;
     if (took > SLOW_WARN_MS) console.warn(`final lento ${room.id}: ${took} ms`);
     return out;
@@ -806,18 +801,7 @@ async function translateFinal(
   for (const delay of [350, 900]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
     try {
-      return await withTimeout(timeoutMs, (signal) =>
-        translateWithHedge(config, original, direction, {
-          ...base,
-          signal,
-          provider: preferred,
-          fallback: config.fallback,
-          firstTokenMs: config.firstTokenMs,
-          timeoutMs,
-          fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
-          skipPreferred: degraded,
-        })
-      );
+      return await run();
     } catch (err) {
       lastErr = err;
       if (!isRateLimited(err)) throw err;
@@ -849,6 +833,9 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
   const direction = room.direction;
   const seq = ++room.seq;
+  // Drafts started before this final belong to the closed sentence: none may
+  // render or become lastDraft, or the next sentence's draft hits the shrink guard.
+  room.lastDraftSeq = seq;
   const context = translationContext(room);
 
   // Stream the final onto the live line even while drafts are enabled, so a
@@ -877,23 +864,31 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   // Deepgram's latest interim is usually identical to the final, and its draft
   // is still in flight when flush arrives. Waiting is faster than starting
   // another translation.
-  if (!reusable && !config.finalProvider) {
-    for (const draft of room.draftsInFlight.values()) {
-      if (normalizeText(draft.source) === wanted) {
-        try {
-          // Do not wait for this draft if it is stalled at the provider.
-          reusable = await Promise.race([
-            draft.promise,
-            new Promise<null>((resolve) =>
-              setTimeout(() => resolve(null), config.firstTokenMs + 1500)
-            ),
-          ]);
-        } catch {
-          reusable = null;
-        }
-        break;
-      }
+  const matching =
+    !reusable && !config.finalProvider
+      ? [...room.draftsInFlight].find(([, draft]) => normalizeText(draft.source) === wanted)
+      : undefined;
+  // Retired drafts can no longer render; free their streams for the next sentence.
+  // Each draft's own finally releases its slot.
+  for (const abort of room.draftsInFlight.keys()) {
+    if (abort !== matching?.[0]) abort.abort();
+  }
+  if (matching) {
+    const [abort, draft] = matching;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      // Do not wait for this draft if it is stalled at the provider.
+      reusable = await Promise.race([
+        draft.promise,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), config.firstTokenMs + 1500);
+        }),
+      ]);
+    } catch {
+      reusable = null;
     }
+    clearTimeout(timer);
+    if (!reusable) abort.abort();
   }
 
   let translated = original;

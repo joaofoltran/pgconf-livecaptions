@@ -28,10 +28,7 @@ export type Room = {
   draftSource: string;
   draftCandidate: string;
   draftTimer: NodeJS.Timeout | null;
-  draftsInFlight: Map<
-    AbortController,
-    { source: string; promise: Promise<string>; startedAt: number; gotToken: boolean }
-  >;
+  draftsInFlight: Map<AbortController, { source: string; promise: Promise<string>; gotToken: boolean }>;
   lastDraft: { source: string; translated: string } | null;
   lastDraftSeq: number;
   // Start of the current sentence's translation repeated in two consecutive drafts:

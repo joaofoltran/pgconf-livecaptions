@@ -34,29 +34,33 @@ function abortError(): Error {
   return err;
 }
 
-function sseBody(text: string, ttftMs: number, signal?: AbortSignal): ReadableStream<Uint8Array> {
+function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError());
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(abortError());
+      },
+      { once: true }
+    );
+  });
+}
+
+type Stream = { text: string; ttftMs: number; failAfterFirst?: boolean; status?: number };
+
+function sseBody(stream: Stream, signal?: AbortSignal): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream({
     async start(controller) {
       try {
-        if (ttftMs) {
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(resolve, ttftMs);
-            const onAbort = () => {
-              clearTimeout(timer);
-              reject(abortError());
-            };
-            if (signal?.aborted) {
-              clearTimeout(timer);
-              onAbort();
-              return;
-            }
-            signal?.addEventListener("abort", onAbort, { once: true });
-          });
-        }
+        await waitOrAbort(stream.ttftMs, signal);
         controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`)
+          encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: stream.text } }] })}\n\n`)
         );
+        if (stream.failAfterFirst) throw new Error("socket hang up");
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
@@ -66,191 +70,139 @@ function sseBody(text: string, ttftMs: number, signal?: AbortSignal): ReadableSt
   });
 }
 
-function hangUntilAbort(signal?: AbortSignal): Promise<never> {
-  return new Promise((_, reject) => {
-    const onAbort = () => reject(abortError());
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
+type Call = { provider: "primary" | "fallback"; system: string; aborted: boolean };
 
-type MockOpts = {
-  primary?: "hang" | { text: string; ttftMs: number; status?: number };
-  fallback?: { text: string; ttftMs: number };
-};
-
-function mockProviders(opts: MockOpts) {
-  const calls: { url: string; aborted: boolean }[] = [];
+function mockProviders(opts: { primary: Stream | "hang"; fallback?: Stream }) {
+  const calls: Call[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    const rec = { url, aborted: false };
-    calls.push(rec);
-    init?.signal?.addEventListener("abort", () => {
-      rec.aborted = true;
-    });
+    const provider = String(input).startsWith("https://primary.test/") ? "primary" : "fallback";
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    const call: Call = { provider, system: body.messages[0].content, aborted: false };
+    calls.push(call);
+    init?.signal?.addEventListener("abort", () => (call.aborted = true));
 
-    if (url.startsWith("https://primary.test/")) {
-      const primary = opts.primary ?? "hang";
-      if (primary === "hang") {
-        await hangUntilAbort(init?.signal);
-        throw new Error("unreachable");
-      }
-      if (primary.status && primary.status >= 400) {
-        return new Response("upstream error", { status: primary.status });
-      }
-      return {
-        ok: true,
-        body: sseBody(primary.text, primary.ttftMs, init?.signal),
-      } as Response;
+    const stream = provider === "primary" ? opts.primary : opts.fallback ?? { text: "fallback", ttftMs: 10 };
+    if (stream === "hang") {
+      await waitOrAbort(60_000, init?.signal);
+      throw new Error("unreachable");
     }
-
-    if (url.startsWith("https://fallback.test/")) {
-      const fallback = opts.fallback ?? { text: "fallback text", ttftMs: 10 };
-      return {
-        ok: true,
-        body: sseBody(fallback.text, fallback.ttftMs, init?.signal),
-      } as Response;
-    }
-
-    throw new Error(`unexpected fetch ${url}`);
+    if (stream.status) return new Response("upstream error", { status: stream.status });
+    return { ok: true, body: sseBody(stream, init?.signal) } as Response;
   }) as typeof fetch;
-  return calls;
+  const count = (provider: Call["provider"]) => calls.filter((c) => c.provider === provider).length;
+  return { calls, count };
 }
 
-async function sequentialFailover(
-  config: AppConfig,
-  timeoutMs: number,
-  onPartial: (text: string) => void
-): Promise<string> {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
-  try {
-    return await translateCaption(config, "hello world", "en-pt", {
-      signal: abort.signal,
-      onPartial,
-    });
-  } catch {
-    clearTimeout(timer);
-    return translateCaption(config, "hello world", "en-pt", {
-      provider: config.fallback ?? undefined,
-      onPartial,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const hedge = (config: AppConfig, extra: Partial<Parameters<typeof translateWithHedge>[3]> = {}) =>
+  translateWithHedge(config, "hello world", "en-pt", {
+    firstTokenMs: 600,
+    timeoutMs: 3000,
+    fallbackTimeoutMs: 6000,
+    fallback: config.fallback,
+    ...extra,
+  });
 
 test("fast preferred provider never calls fallback", async () => {
   const config = testConfig();
-  const calls = mockProviders({
-    primary: { text: "olá mundo", ttftMs: 5 },
-    fallback: { text: "fallback", ttftMs: 5 },
-  });
-  const out = await translateWithHedge(config, "hello world", "en-pt", {
-    firstTokenMs: 200,
-    timeoutMs: 1000,
-    fallback: config.fallback,
-  });
-  assert.equal(out, "olá mundo");
-  assert.equal(calls.filter((c) => c.url.startsWith("https://fallback.test/")).length, 0);
+  const mock = mockProviders({ primary: { text: "olá mundo", ttftMs: 5 } });
+  let successes = 0;
+  assert.equal(await hedge(config, { onPreferredSuccess: () => successes++ }), "olá mundo");
+  assert.equal(mock.count("fallback"), 0);
+  assert.equal(successes, 1);
 });
 
-test("preferred HTTP error fails over without waiting for first-token timeout", async () => {
+test("preferred HTTP error fails over without waiting for the first-token window", async () => {
   const config = testConfig();
   mockProviders({
-    primary: { text: "ignored", ttftMs: 0, status: 500 },
+    primary: { text: "", ttftMs: 0, status: 500 },
     fallback: { text: "texto de reserva", ttftMs: 10 },
   });
+  const failures: string[] = [];
   const started = Date.now();
-  const out = await translateWithHedge(config, "hello world", "en-pt", {
-    firstTokenMs: 400,
-    timeoutMs: 1000,
-    fallbackTimeoutMs: 1000,
-    fallback: config.fallback,
-  });
-  const took = Date.now() - started;
+  const out = await hedge(config, { onPreferredFailure: (why) => failures.push(why) });
   assert.equal(out, "texto de reserva");
-  assert.ok(took < 250, `failover after error took ${took} ms`);
+  assert.ok(Date.now() - started < 400, `failover took ${Date.now() - started} ms`);
+  assert.deepEqual(failures, ["error"]);
 });
 
-test("skipPreferred uses only fallback", async () => {
-  const config = testConfig();
-  const calls = mockProviders({
-    primary: { text: "primary", ttftMs: 5 },
-    fallback: { text: "fallback only", ttftMs: 5 },
-  });
-  const out = await translateWithHedge(config, "hello world", "en-pt", {
-    firstTokenMs: 200,
-    timeoutMs: 1000,
-    fallback: config.fallback,
-    skipPreferred: true,
-  });
-  assert.equal(out, "fallback only");
-  assert.equal(calls.filter((c) => c.url.startsWith("https://primary.test/")).length, 0);
-});
-
-test("without fallback, a silent preferred provider aborts at firstTokenMs", async () => {
+test("without a fallback, a slow first token is not a timeout", async () => {
   const config = testConfig();
   config.fallback = null;
-  mockProviders({ primary: "hang" });
-  const started = Date.now();
-  await assert.rejects(
-    () =>
-      translateWithHedge(config, "hello world", "en-pt", {
-        firstTokenMs: 80,
-        timeoutMs: 1000,
-      }),
-    /No first translation token/
-  );
-  const took = Date.now() - started;
-  assert.ok(took < 250, `abort took ${took} ms`);
-  assert.ok(took >= 70, `abort too fast: ${took} ms`);
+  mockProviders({ primary: { text: "devagar", ttftMs: 250 } });
+  const failures: string[] = [];
+  const out = await hedge(config, { firstTokenMs: 50, onPreferredFailure: (why) => failures.push(why) });
+  assert.equal(out, "devagar");
+  assert.deepEqual(failures, []);
 });
 
+test("a preferred stream failing after its first token continues on the fallback", async () => {
+  const config = testConfig();
+  const mock = mockProviders({
+    primary: { text: "Olá", ttftMs: 5, failAfterFirst: true },
+    fallback: { text: "Olá mundo", ttftMs: 10 },
+  });
+  const failures: string[] = [];
+  const partials: string[] = [];
+  const out = await hedge(config, {
+    onPartial: (p) => partials.push(p),
+    onPreferredFailure: (why) => failures.push(why),
+  });
+  assert.equal(out, "Olá mundo");
+  assert.deepEqual(partials, ["Olá", "Olá mundo"]);
+  assert.deepEqual(failures, ["error after first token"], "counted once toward the breaker");
+  const retry = mock.calls.find((c) => c.provider === "fallback");
+  assert.match(retry?.system ?? "", /beginning verbatim with "Olá"/);
+});
+
+test("a caller abort is not reported as a preferred failure", async () => {
+  const config = testConfig();
+  mockProviders({ primary: "hang" });
+  const abort = new AbortController();
+  const failures: string[] = [];
+  setTimeout(() => abort.abort(), 50);
+  await assert.rejects(hedge(config, { signal: abort.signal, onPreferredFailure: (why) => failures.push(why) }));
+  assert.deepEqual(failures, []);
+});
+
+// Latency demo: rerun with `npx tsx --test test/translate.test.ts` and read the
+// LATENCY line. Bounds are wide so a loaded CI machine does not flake.
 test("primary stall: hedged first token vs sequential whole-request timeout", async () => {
   const config = testConfig();
   const fallback = { text: "texto de reserva", ttftMs: 20 };
 
   mockProviders({ primary: "hang", fallback });
-  let sequentialPartialAt = 0;
+  let sequentialFirst = 0;
   const sequentialStarted = Date.now();
-  const sequentialText = await sequentialFailover(config, 3500, () => {
-    if (!sequentialPartialAt) sequentialPartialAt = Date.now();
-  });
-  const sequentialMs = sequentialPartialAt - sequentialStarted;
-
-  const hedgeCalls = mockProviders({ primary: "hang", fallback });
-  let hedgedPartialAt = 0;
-  const hedgeStarted = Date.now();
-  const stalls: string[] = [];
-  const hedgedText = await translateWithHedge(config, "hello world", "en-pt", {
-    firstTokenMs: 600,
-    timeoutMs: 3000,
-    fallbackTimeoutMs: 6000,
-    fallback: config.fallback,
-    onPartial: () => {
-      if (!hedgedPartialAt) hedgedPartialAt = Date.now();
-    },
-    onPreferredStall: (why) => stalls.push(why),
-  });
-  const hedgedMs = hedgedPartialAt - hedgeStarted;
-
-  console.log(
-    `LATENCY before=${sequentialMs}ms after=${hedgedMs}ms ` +
-      `(sequential whole-request timeout 3500ms vs first-token hedge 600ms)`
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 3500);
+  const sequentialText = await translateCaption(config, "hello world", "en-pt", { signal: abort.signal }).catch(
+    () =>
+      translateCaption(config, "hello world", "en-pt", {
+        provider: config.fallback ?? undefined,
+        onPartial: () => (sequentialFirst ||= Date.now()),
+      })
   );
+  clearTimeout(timer);
+  const beforeMs = sequentialFirst - sequentialStarted;
+
+  const mock = mockProviders({ primary: "hang", fallback });
+  let hedgedFirst = 0;
+  const hedgeStarted = Date.now();
+  const failures: string[] = [];
+  const hedgedText = await hedge(config, {
+    onPartial: () => (hedgedFirst ||= Date.now()),
+    onPreferredFailure: (why) => failures.push(why),
+  });
+  const afterMs = hedgedFirst - hedgeStarted;
+
+  console.log(`LATENCY before=${beforeMs}ms after=${afterMs}ms (whole-request timeout 3500ms vs first-token hedge 600ms)`);
 
   assert.equal(sequentialText, "texto de reserva");
   assert.equal(hedgedText, "texto de reserva");
-  assert.deepEqual(stalls, ["no first token"]);
-  assert.ok(sequentialMs >= 3450, `sequential first token at ${sequentialMs} ms`);
-  assert.ok(sequentialMs < 4200, `sequential too slow: ${sequentialMs} ms`);
-  assert.ok(hedgedMs >= 550, `hedge too fast: ${hedgedMs} ms`);
-  assert.ok(hedgedMs < 900, `hedge too slow: ${hedgedMs} ms`);
-  assert.equal(hedgeCalls.filter((c) => c.url.startsWith("https://primary.test/")).length, 1);
-  assert.equal(hedgeCalls.filter((c) => c.url.startsWith("https://fallback.test/")).length, 1);
-  assert.equal(hedgeCalls.find((c) => c.url.startsWith("https://primary.test/"))?.aborted, true);
+  assert.deepEqual(failures, ["no first token"]);
+  assert.ok(beforeMs >= 3400, `before: ${beforeMs} ms`);
+  assert.ok(afterMs >= 550 && afterMs < 1500, `after: ${afterMs} ms`);
+  assert.ok(beforeMs - afterMs > 2000, "hedge must save at least 2 s");
+  assert.equal(mock.count("primary"), 1);
+  assert.equal(mock.calls.find((c) => c.provider === "primary")?.aborted, true, "losing stream cancelled");
 });

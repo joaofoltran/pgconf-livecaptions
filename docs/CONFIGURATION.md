@@ -185,7 +185,14 @@ real-event transcripts before enabling it.
 When `FALLBACK_API_KEY` is present, the server hedges draft and final captions
 against this provider. If the preferred provider emits no token within
 `FIRST_TOKEN_MS`, the fallback request starts in parallel and the first
-provider to stream wins; the other request is cancelled.
+provider to stream wins; the other request is cancelled. A stream that fails
+after it started continues on the fallback from the text already shown.
+
+Two preferred-provider failures within 15 seconds open a circuit breaker for
+that provider: its drafts and finals go straight to the fallback for 45 seconds.
+After that, one probe request tries the preferred provider again while the rest
+stay on the fallback. Without a fallback, `FIRST_TOKEN_MS` has no effect and
+requests use their normal timeouts.
 
 | Variable | Default | Description |
 | --- | --- | --- |
