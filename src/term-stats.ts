@@ -39,9 +39,13 @@ const STOP_WORDS = new Set(
 // "write-ahead", "pg_stat_statements", "node.js", "don't".
 const TOKEN = /[\p{L}\p{N}]+(?:[-_.'][\p{L}\p{N}]+)*/gu;
 const NUMBER_LIKE = /^[\p{N}._'-]+$/u;
+// Longer "words" are pasted URLs, hashes or noise, not vocabulary.
+const MAX_TOKEN_CHARS = 48;
+// A caption line is a sentence or two; anything longer is cut before counting.
+const MAX_LINE_CHARS = 1000;
 
-// shortcut: a hard per-room cap that drops single-occurrence terms when hit;
-// make it a setting if a long event keeps hitting it.
+// shortcut: a fixed per-room cap; make it a setting if a long event keeps
+// hitting it.
 const MAX_TERMS = 20_000;
 
 // Lowercased single words, plus two-word terms ("logical replication") made of
@@ -52,7 +56,12 @@ export function extractTerms(text: string): string[] {
   for (const clause of clauses) {
     let previous = "";
     for (const word of clause.match(TOKEN) ?? []) {
-      if (word.length < 2 || STOP_WORDS.has(word) || NUMBER_LIKE.test(word)) {
+      if (
+        word.length < 2 ||
+        word.length > MAX_TOKEN_CHARS ||
+        STOP_WORDS.has(word) ||
+        NUMBER_LIKE.test(word)
+      ) {
         previous = "";
         continue;
       }
@@ -74,19 +83,33 @@ export type TermStatsSnapshot = {
   sample: string[];
 };
 
+export type TermStatsOptions = {
+  dir: string;
+  enabledRooms: readonly string[];
+  sampleMaxLines: number;
+  maxTerms?: number;
+  flushMs?: number;
+};
+
 // One JSON file per opted-in room under `dir`. Writes are batched and atomic
 // (temporary file + rename) so a crash leaves the previous file intact.
 export class TermStats {
   private readonly cache = new Map<string, RoomStats>();
   private readonly dirty = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
+  private readonly dir: string;
+  private readonly enabledRooms: ReadonlySet<string>;
+  private readonly sampleMaxLines: number;
+  private readonly maxTerms: number;
+  private readonly flushMs: number;
 
-  constructor(
-    private readonly dir: string,
-    private readonly enabledRooms: ReadonlySet<string>,
-    private readonly sampleMaxLines: number,
-    private readonly flushMs = 5000
-  ) {}
+  constructor(options: TermStatsOptions) {
+    this.dir = options.dir;
+    this.enabledRooms = new Set(options.enabledRooms);
+    this.sampleMaxLines = options.sampleMaxLines;
+    this.maxTerms = options.maxTerms ?? MAX_TERMS;
+    this.flushMs = options.flushMs ?? 5000;
+  }
 
   isEnabled(room: string): boolean {
     return this.enabledRooms.has(room);
@@ -99,18 +122,13 @@ export class TermStats {
   record(room: string, text: string): void {
     if (!this.enabledRooms.has(room)) return;
     const stats = this.load(room);
-    for (const term of extractTerms(text)) {
+    const line = text.slice(0, MAX_LINE_CHARS).replace(/[\uD800-\uDBFF]$/, "");
+    for (const term of extractTerms(line)) {
       stats.terms.set(term, (stats.terms.get(term) ?? 0) + 1);
     }
-    if (stats.terms.size > MAX_TERMS) {
-      for (const [term, count] of stats.terms) if (count === 1) stats.terms.delete(term);
-    }
-    if (stats.sample.length < this.sampleMaxLines) stats.sample.push(text);
-    this.dirty.add(room);
-    if (!this.timer) {
-      this.timer = setTimeout(() => this.flush(), this.flushMs);
-      this.timer.unref();
-    }
+    this.enforceCap(stats.terms);
+    if (stats.sample.length < this.sampleMaxLines) stats.sample.push(line);
+    this.markDirty(room);
   }
 
   snapshot(room: string): TermStatsSnapshot {
@@ -158,24 +176,60 @@ export class TermStats {
     return path.join(this.dir, `${room}.json`);
   }
 
+  private markDirty(room: string): void {
+    this.dirty.add(room);
+    if (!this.timer) {
+      this.timer = setTimeout(() => this.flush(), this.flushMs);
+      this.timer.unref();
+    }
+  }
+
+  // Drops the lowest counts (oldest first among ties) to 90% of the cap, so
+  // the sort runs once per batch of new terms rather than on every caption.
+  // At the cap, a brand-new term is usually the one dropped.
+  private enforceCap(terms: Map<string, number>): boolean {
+    if (terms.size <= this.maxTerms) return false;
+    const keep = Math.floor(this.maxTerms * 0.9);
+    const lowest = [...terms].sort((a, b) => a[1] - b[1]);
+    for (const [term] of lowest.slice(0, terms.size - keep)) terms.delete(term);
+    return true;
+  }
+
   // A corrupt file throws instead of being replaced, so a bad read never
-  // overwrites the counts already on disk.
+  // overwrites the counts already on disk. A file over the current limits
+  // (written before a cap was lowered) is trimmed and rewritten.
   private load(room: string): RoomStats {
     let stats = this.cache.get(room);
     if (stats) return stats;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file(room), "utf8")) as {
-        terms?: Record<string, number>;
-        sample?: string[];
-      };
-      stats = { terms: new Map(Object.entries(raw.terms ?? {})), sample: raw.sample ?? [] };
+      stats = parseStats(fs.readFileSync(this.file(room), "utf8"));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       stats = { terms: new Map(), sample: [] };
     }
+    const cappedTerms = this.enforceCap(stats.terms);
+    const cappedSample = stats.sample.splice(this.sampleMaxLines).length > 0;
     this.cache.set(room, stats);
+    if (cappedTerms || cappedSample) this.markDirty(room);
     return stats;
   }
+}
+
+function parseStats(json: string): RoomStats {
+  const raw = JSON.parse(json) as { terms?: unknown; sample?: unknown } | null;
+  const terms = raw?.terms;
+  const sample = raw?.sample;
+  if (
+    !terms ||
+    typeof terms !== "object" ||
+    Array.isArray(terms) ||
+    !Object.values(terms).every((n) => Number.isSafeInteger(n) && n > 0) ||
+    !Array.isArray(sample) ||
+    !sample.every((line) => typeof line === "string")
+  ) {
+    throw new Error("not a term stats file");
+  }
+  return { terms: new Map(Object.entries(terms as Record<string, number>)), sample };
 }
 
 export function termStatsText(snapshot: TermStatsSnapshot): string {

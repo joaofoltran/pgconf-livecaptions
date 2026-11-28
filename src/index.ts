@@ -70,11 +70,11 @@ for (const id of config.rooms) {
   rooms.set(id, createRoom(id, config.tokens[id]));
 }
 // Docker mounts a named volume at /app/data; the rest of the container is read-only.
-const termStats = new TermStats(
-  path.resolve(process.cwd(), "data/term-stats"),
-  new Set(config.termStatsRooms),
-  config.roomSampleMaxLines
-);
+const termStats = new TermStats({
+  dir: path.resolve(process.cwd(), "data/term-stats"),
+  enabledRooms: config.termStatsRooms,
+  sampleMaxLines: config.roomSampleMaxLines,
+});
 
 function getRoom(id: string | undefined): Room | undefined {
   if (!id) return undefined;

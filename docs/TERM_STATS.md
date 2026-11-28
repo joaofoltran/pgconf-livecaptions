@@ -29,15 +29,21 @@ anything else a speaker says aloud.
 - Text is lowercased, and `’` is treated as `'`.
 - A word is a run of letters and digits. Internal `-`, `_`, `.` and `'` keep
   the word whole: `write-ahead`, `pg_stat_statements`, `node.js`.
-- Skipped: one-character words, bare numbers such as `17` or `17.2`, and a
-  built-in list of English and Portuguese stop words and fillers (`the`, `and`,
-  `um`, `de`, `que`, `né`, ...). The list is `STOP_WORDS` in
-  `src/term-stats.ts`.
+- Skipped: one-character words, words over 48 characters, bare numbers such
+  as `17` or `17.2`, and a built-in list of English and Portuguese stop words
+  and fillers (`the`, `and`, `um`, `de`, `que`, `né`, ...). The list is
+  `STOP_WORDS` in `src/term-stats.ts`.
 - Two-word terms are counted too: two kept words next to each other in the same
   clause, such as `logical replication` or `replicação lógica`. A stop word or a
   `.`, `,`, `;`, `:`, `!`, `?` between them breaks the pair.
-- Each room keeps at most 20,000 distinct terms. When it goes over, terms seen
-  only once are dropped.
+- A line longer than 1,000 characters is cut to 1,000 before it is counted or
+  kept in the sample.
+- Each room keeps at most 20,000 distinct terms. When it goes over, the terms
+  with the lowest counts are dropped until 18,000 remain, so a brand-new term
+  in a full room is usually dropped again soon.
+- When a file is loaded with more terms or sample lines than the current
+  limits allow (for example after `ROOM_SAMPLE_MAX_LINES` was lowered), it is
+  trimmed to the limits and rewritten. The sample keeps its first lines.
 
 Counts are lowercase, so curate casing (`PostgreSQL`, `WAL`) by hand when you
 copy terms into `config/keyterms.txt` or `config/glossary.txt`.
