@@ -75,7 +75,7 @@ function hedgedTranslate(
     ...options,
     provider: preferred,
     fallback,
-    fallbackAfterMs: quality ? timeoutMs : config.primaryMedianFirstTokenMs,
+    fallbackAfterMs: quality ? timeoutMs : config.fallbackStartMs,
     cutoffMs,
     timeoutMs,
     fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,

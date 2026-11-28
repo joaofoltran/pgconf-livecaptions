@@ -111,7 +111,7 @@ test("fast preferred provider never calls fallback", async () => {
   assert.equal(successes, 1);
 });
 
-test("a preferred provider slower than the median but before the cutoff replaces the fallback", async () => {
+test("a preferred provider slower than the fallback start but before the cutoff replaces the fallback", async () => {
   const config = testConfig();
   // The fallback starts at 250 ms and even finishes before the preferred provider streams.
   const mock = mockProviders({

@@ -420,11 +420,11 @@ and account shortly before the event.
 
 ### Measuring first-token latency
 
-The hedge starts the fallback at `PRIMARY_MEDIAN_FIRST_TOKEN_MS` (default
-250 ms) and cuts the primary off at the median x `PRIMARY_CUTOFF_MULTIPLIER`
-(default 2, so 500 ms). These defaults are João's chosen values, not measured
-ones.
-Two ways to measure the primary's real median and p90:
+The fallback is also asked when the primary has sent no text after
+`FALLBACK_START_MS` (default 500 ms), and the primary is cancelled when it has
+sent none after `PRIMARY_CUTOFF_MS` (default 1500 ms). These defaults are João's
+chosen values, not measured ones. Two ways to measure the primary's real median
+and p90 time to first word:
 
 ```bash
 # Live: N sample captions (default 20) against the configured primary, using .env.
@@ -437,8 +437,8 @@ docker compose logs --no-color app | docker compose exec -T app node dist/measur
 
 Both print `n`, `median`, `p90`, and how many requests were cut off. The log
 lines look like `first token room-1 draft gpt-oss-120b 231 ms` or
-`... >500 ms (cut off)`; cut-off requests count as slower than any measured one.
-Set `PRIMARY_MEDIAN_FIRST_TOKEN_MS` to the measured median, then redeploy.
+`... >1500 ms (cut off)`; cut-off requests count as slower than any measured one.
+Set `FALLBACK_START_MS` to the measured median, then redeploy.
 
 ## Incident response
 
@@ -467,8 +467,8 @@ Set `PRIMARY_MEDIAN_FIRST_TOKEN_MS` to the measured median, then redeploy.
 2. Look for timeout, `no first token`, `degraded` (circuit breaker), fallback,
    and rate-limit log entries.
 3. If `no first token` appears on healthy traffic, measure the primary's
-   median (see "Measuring first-token latency") and raise
-   `PRIMARY_MEDIAN_FIRST_TOKEN_MS` or `PRIMARY_CUTOFF_MULTIPLIER`.
+   median (see "Measuring first-token latency") and raise `FALLBACK_START_MS`
+   or `PRIMARY_CUTOFF_MS`.
 4. Lower `DRAFTS_PER_SECOND`.
 5. Increase `DRAFT_INTERVAL_MS`.
 6. Temporarily set `LIVE_DRAFTS=false` if final captions remain healthy.

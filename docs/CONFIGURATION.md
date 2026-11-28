@@ -145,11 +145,11 @@ On noisy transcripts from the real event, Cerebras `gpt-oss-120b` with
 normal translation path for captions that needed to grow several times per
 second.
 
-A fallback is kept because Cerebras can stall. If Cerebras has not streamed
-its first word after `PRIMARY_MEDIAN_FIRST_TOKEN_MS` (default 250 ms), the app
-starts the fallback in parallel, and it cuts Cerebras off at the cutoff
-(default 500 ms). That recovers a stalled caption in about half a second plus
-the fallback's first word, instead of waiting for the whole request timeout.
+A fallback is kept because Cerebras can stall. If Cerebras has sent no text
+after `FALLBACK_START_MS` (default 500 ms), the app also asks the fallback, and
+it cancels Cerebras if it has still sent nothing after `PRIMARY_CUTOFF_MS`
+(default 1500 ms). A stalled caption then recovers in about 1.5 seconds
+instead of waiting for the whole request timeout.
 The recommended fallback runs the same `gpt-oss-120b` model family on Groq, so
 wording stays consistent when captions switch providers.
 
@@ -185,19 +185,18 @@ real-event transcripts before enabling it.
 
 ### Fallback provider
 
-When `FALLBACK_API_KEY` is present, the server hedges draft and final captions
-against this provider:
+When `FALLBACK_API_KEY` is present, draft and final captions can fall back to
+this provider:
 
 1. Each request goes to the preferred provider only.
-2. If it has not streamed its first word after `PRIMARY_MEDIAN_FIRST_TOKEN_MS`,
-   the fallback request starts in parallel and its words are shown as they
-   arrive.
-3. If the preferred provider starts streaming before the cutoff
-   (`PRIMARY_MEDIAN_FIRST_TOKEN_MS` x `PRIMARY_CUTOFF_MULTIPLIER`), the fallback
-   is cancelled and the preferred provider's text replaces it, even if the
-   caption visibly rewrites. Finals are still delivered once each and in order.
-4. At the cutoff, a preferred provider with no first word is cancelled and the
-   fallback's caption stays.
+2. If it has sent no text after `FALLBACK_START_MS`, the same request also goes
+   to the fallback, and the fallback's words are shown as they arrive.
+3. If the preferred provider starts sending text before `PRIMARY_CUTOFF_MS`,
+   the fallback request is cancelled and the preferred provider's text replaces
+   the fallback's, even if the caption visibly rewrites. Finals are still
+   delivered once each and in order.
+4. At `PRIMARY_CUTOFF_MS`, a preferred provider that has sent no text is
+   cancelled and the fallback's caption stays.
 
 A preferred stream that fails after its first word continues on the fallback
 from the text already shown.
@@ -206,13 +205,13 @@ start streaming within 1.5 seconds, before the source text is shown. With `FINAL
 whole timeout before hedging, because it is chosen for quality, not speed.
 
 A preferred-provider failure is an error response, a timeout, or a cutoff; a
-hedge the preferred provider still wins before the cutoff does not count, and
+fallback request the preferred provider still beats does not count, and
 neither do HTTP 429 responses to drafts. Two failures within 15 seconds open a
 circuit breaker for that provider: its drafts and finals go straight to the
 fallback for 45 seconds. After that, one probe request tries the preferred
-provider again while the rest stay on the fallback. Without a fallback, the
-median and cutoff have no effect: nothing is cut off and requests use their
-normal timeouts.
+provider again while the rest stay on the fallback. Without a fallback,
+`FALLBACK_START_MS` and `PRIMARY_CUTOFF_MS` have no effect: nothing is cut off
+and requests use their normal timeouts.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -220,14 +219,15 @@ normal timeouts.
 | `FALLBACK_BASE_URL` | none; required with a key | Fallback API root. Recommended: `https://api.groq.com/openai/v1`. |
 | `FALLBACK_MODEL` | none; required with a key | Fallback model. Recommended: `openai/gpt-oss-120b`. |
 | `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
-| `PRIMARY_MEDIAN_FIRST_TOKEN_MS` | `250` | Milliseconds without a first word from the preferred provider before the fallback starts. 50–3000. |
-| `PRIMARY_CUTOFF_MULTIPLIER` | `2` | The preferred provider is cut off at median x multiplier (default 500 ms). 1–10, decimals allowed; the product must be at most 3000 ms. |
+| `FALLBACK_START_MS` | `500` | Milliseconds without any text from the preferred provider before the fallback is also asked. 50–3000. |
+| `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–3000, and greater than `FALLBACK_START_MS`. |
 
-The defaults are João's chosen values, not measurements: 250 ms is a target
-for Cerebras's median time to first word. Measure it from the venue with
-`measure-first-token` (see "Measuring first-token latency" in
-`docs/OPERATIONS.md`) and adjust. `FIRST_TOKEN_MS` was replaced by these two
-settings; the app refuses to start while it is still set.
+The defaults are João's chosen values, not measurements. Measure Cerebras's
+median time to first word from the venue with `measure-first-token` (see
+"Measuring first-token latency" in `docs/OPERATIONS.md`) and set
+`FALLBACK_START_MS` to it. `FIRST_TOKEN_MS`, `PRIMARY_MEDIAN_FIRST_TOKEN_MS` and
+`PRIMARY_CUTOFF_MULTIPLIER` were replaced by these two settings; the app refuses
+to start while any of them is still set.
 
 The fallback base URL and model have no defaults, so a key is never sent to a
 provider it does not belong to. If `FALLBACK_API_KEY` is set without

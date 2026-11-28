@@ -12,6 +12,7 @@ const managedVariables = [
   "FALLBACK_BASE_URL",
   "FALLBACK_EXTRA_BODY",
   "FALLBACK_MODEL",
+  "FALLBACK_START_MS",
   "FIRST_TOKEN_MS",
   "FINAL_API_KEY",
   "LIVE_DRAFTS",
@@ -19,6 +20,7 @@ const managedVariables = [
   "OPENAI_BASE_URL",
   "OPENAI_EXTRA_BODY",
   "PORT",
+  "PRIMARY_CUTOFF_MS",
   "PRIMARY_CUTOFF_MULTIPLIER",
   "PRIMARY_MEDIAN_FIRST_TOKEN_MS",
   "ROOMS",
@@ -63,26 +65,29 @@ test("loadConfig accepts a valid minimal environment", () => {
   assert.equal(config.port, 3000);
   assert.equal(config.sttProxy, true);
   assert.equal(config.liveDrafts, true);
-  assert.equal(config.primaryMedianFirstTokenMs, 250);
-  assert.equal(config.primaryCutoffMs, 500);
+  assert.equal(config.fallbackStartMs, 500);
+  assert.equal(config.primaryCutoffMs, 1500);
 });
 
-test("the primary cutoff is the median times the multiplier, checked at startup", () => {
-  process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS = "300";
-  process.env.PRIMARY_CUTOFF_MULTIPLIER = "2.5";
-  assert.equal(loadConfig().primaryCutoffMs, 750);
+test("the fallback start and primary cutoff are checked at startup", () => {
+  process.env.FALLBACK_START_MS = "400";
+  process.env.PRIMARY_CUTOFF_MS = "1200";
+  assert.equal(loadConfig().fallbackStartMs, 400);
+  assert.equal(loadConfig().primaryCutoffMs, 1200);
 
-  process.env.PRIMARY_CUTOFF_MULTIPLIER = "0.5";
-  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MULTIPLIER must be a number between 1 and 10/);
+  process.env.PRIMARY_CUTOFF_MS = "400";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS/);
 
-  process.env.PRIMARY_CUTOFF_MULTIPLIER = "4";
-  process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS = "1000";
-  assert.throws(() => loadConfig(), /must be at most 3000 ms/);
+  process.env.PRIMARY_CUTOFF_MS = "3500";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be an integer between 50 and 3000/);
 
-  delete process.env.PRIMARY_CUTOFF_MULTIPLIER;
-  delete process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS;
-  process.env.FIRST_TOKEN_MS = "600";
-  assert.throws(() => loadConfig(), /FIRST_TOKEN_MS was replaced by PRIMARY_MEDIAN_FIRST_TOKEN_MS/);
+  delete process.env.FALLBACK_START_MS;
+  delete process.env.PRIMARY_CUTOFF_MS;
+  for (const old of ["FIRST_TOKEN_MS", "PRIMARY_MEDIAN_FIRST_TOKEN_MS", "PRIMARY_CUTOFF_MULTIPLIER"]) {
+    process.env[old] = "600";
+    assert.throws(() => loadConfig(), new RegExp(`${old} was replaced by FALLBACK_START_MS and PRIMARY_CUTOFF_MS`));
+    delete process.env[old];
+  }
 });
 
 test("a fallback key without its base URL and model fails at startup", () => {

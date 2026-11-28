@@ -65,28 +65,22 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
   return value === "true";
 }
 
-// With a fallback, it starts when the primary has streamed nothing by its median
-// time to first token, and the primary is cut off at median x multiplier.
+// With a fallback: it starts if the primary has sent no text by FALLBACK_START_MS,
+// and the primary is cancelled if it has sent none by PRIMARY_CUTOFF_MS.
 // The defaults are chosen, not measured: see docs/OPERATIONS.md.
 function primaryTiming() {
-  if (process.env.FIRST_TOKEN_MS !== undefined) {
-    throw new Error(
-      "FIRST_TOKEN_MS was replaced by PRIMARY_MEDIAN_FIRST_TOKEN_MS and PRIMARY_CUTOFF_MULTIPLIER; remove it"
-    );
+  for (const old of ["FIRST_TOKEN_MS", "PRIMARY_MEDIAN_FIRST_TOKEN_MS", "PRIMARY_CUTOFF_MULTIPLIER"]) {
+    if (process.env[old] !== undefined) {
+      throw new Error(`${old} was replaced by FALLBACK_START_MS and PRIMARY_CUTOFF_MS; remove it`);
+    }
   }
-  const medianMs = integerEnv("PRIMARY_MEDIAN_FIRST_TOKEN_MS", "250", 50, 3000);
-  const multiplier = Number(env("PRIMARY_CUTOFF_MULTIPLIER", "2"));
-  if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > 10) {
-    throw new Error("PRIMARY_CUTOFF_MULTIPLIER must be a number between 1 and 10");
-  }
-  const cutoffMs = Math.round(medianMs * multiplier);
+  const fallbackStartMs = integerEnv("FALLBACK_START_MS", "500", 50, 3000);
   // Past the draft timeout the cutoff could never fire.
-  if (cutoffMs > 3000) {
-    throw new Error(
-      "PRIMARY_MEDIAN_FIRST_TOKEN_MS x PRIMARY_CUTOFF_MULTIPLIER must be at most 3000 ms (the draft timeout)"
-    );
+  const primaryCutoffMs = integerEnv("PRIMARY_CUTOFF_MS", "1500", 50, 3000);
+  if (primaryCutoffMs <= fallbackStartMs) {
+    throw new Error("PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS");
   }
-  return { primaryMedianFirstTokenMs: medianMs, primaryCutoffMs: cutoffMs };
+  return { fallbackStartMs, primaryCutoffMs };
 }
 
 // No defaults: a key for one provider must never be sent to another provider's URL.

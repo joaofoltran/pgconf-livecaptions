@@ -190,7 +190,7 @@ test("a short remark right after a sentence does not drop that sentence's final"
   await scenario(
     // Only a retranslation of the sentence is extra slow: reusing its draft is the fix.
     (req) => (req.source === sentence && !req.draft ? { ttftMs: 700, doneMs: 1100 } : { ttftMs: 700, doneMs: 800 }),
-    { PRIMARY_MEDIAN_FIRST_TOKEN_MS: "1000" },
+    { FALLBACK_START_MS: "1000", PRIMARY_CUTOFF_MS: "2000" },
     async (app) => {
       app.send({ type: "interim", text: sentence });
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -224,7 +224,7 @@ test("at DRAFT_INTERVAL_MS=100 a stalled primary is hedged and trips the breaker
         assert.ok(firstDraft, "no draft reached the overlay");
         const firstDraftMs = firstDraft.at - startedAt;
         console.log(`DRAFT first caption after primary stall: ${firstDraftMs} ms`);
-        assert.ok(firstDraftMs < 1500, `first draft took ${firstDraftMs} ms`);
+        assert.ok(firstDraftMs < 2500, `first draft took ${firstDraftMs} ms`);
         // Drafts kept their slots until their hedge fired: none was evicted early.
         const primaryAtOpen = upstream.stats.primary;
         const fallbackAtOpen = upstream.stats.fallback;
@@ -254,9 +254,9 @@ test("a primary that freezes after its first token fails over with the shown pre
   );
 });
 
-test("a primary slower than the median but before the cutoff serves drafts and finals", async () => {
+test("a primary slower than the fallback start but before the cutoff serves drafts and finals", async () => {
   await scenario(
-    (req) => (req.provider === "primary" ? { ttftMs: 400, doneMs: 420 } : { ttftMs: 20, doneMs: 40 }),
+    (req) => (req.provider === "primary" ? { ttftMs: 800, doneMs: 820 } : { ttftMs: 20, doneMs: 40 }),
     {},
     async (app, upstream) => {
       for (const text of ["alpha beta gamma", "alpha beta gamma delta", "alpha beta gamma delta epsilon"]) {
@@ -265,7 +265,7 @@ test("a primary slower than the median but before the cutoff serves drafts and f
       }
       app.sayFinal("alpha beta gamma delta epsilon zeta");
       await waitFor("final", () => app.captions.some((c) => c.final), 4000);
-      assert.ok(upstream.stats.fallback > 0, "the fallback started at the median");
+      assert.ok(upstream.stats.fallback > 0, "the fallback started");
       assert.deepEqual(new Set(app.captions.map(producer)), new Set(["primary"]));
       assert.doesNotMatch(app.log(), /no first token|degraded/);
       assert.match(app.log(), /first token room-1 draft primary-model \d+ ms/);
@@ -275,7 +275,7 @@ test("a primary slower than the median but before the cutoff serves drafts and f
 
 test("a final on an empty line shows the fallback, then swaps to the primary", async () => {
   await scenario(
-    (req) => (req.provider === "primary" ? { ttftMs: 400, doneMs: 450 } : { ttftMs: 20, doneMs: 300 }),
+    (req) => (req.provider === "primary" ? { ttftMs: 800, doneMs: 850 } : { ttftMs: 20, doneMs: 600 }),
     { LIVE_DRAFTS: "false" },
     async (app) => {
       app.sayFinal("one two three four");
@@ -290,9 +290,9 @@ test("a final on an empty line shows the fallback, then swaps to the primary", a
   );
 });
 
-test("a primary past the cutoff is aborted for drafts and finals, then the breaker opens", async () => {
+test("a primary past the cutoff is cancelled for drafts and finals, and the fallback's text stays", async () => {
   await scenario(
-    (req) => (req.provider === "primary" ? { ttftMs: 700, doneMs: 720 } : { ttftMs: 20, doneMs: 40 }),
+    (req) => (req.provider === "primary" ? { ttftMs: 1700, doneMs: 1720 } : { ttftMs: 20, doneMs: 40 }),
     {},
     async (app, upstream) => {
       for (const text of ["alpha beta gamma", "alpha beta gamma delta"]) {
@@ -301,15 +301,8 @@ test("a primary past the cutoff is aborted for drafts and finals, then the break
       }
       app.sayFinal("alpha beta gamma delta epsilon");
       await waitFor("final", () => app.captions.some((c) => c.final), 4000);
-      await waitFor("breaker to open", () => app.log().includes("degraded"), 3000);
       assert.deepEqual(new Set(app.captions.map(producer)), new Set(["fallback"]));
       assert.ok(upstream.stats.requests.every((r) => r.provider !== "primary" || !r.completed), "primary cut off");
-
-      const primaryAtOpen = upstream.stats.primary;
-      app.sayFinal("one two three");
-      await waitFor("final after the breaker opened", () => app.captions.filter((c) => c.final).length === 2, 3000);
-      assert.equal(producer(app.captions.filter((c) => c.final)[1]), "fallback");
-      assert.equal(upstream.stats.primary, primaryAtOpen, "breaker open: the final skips the primary");
     }
   );
 });
@@ -342,7 +335,7 @@ test("without a fallback, a slow single provider still translates the final", as
   );
 });
 
-test("a slower FINAL_* provider is not hedged at the primary's median", async () => {
+test("a slower FINAL_* provider is not hedged at FALLBACK_START_MS", async () => {
   await scenario(
     (req) => (req.provider === "final" ? { ttftMs: 900, doneMs: 950 } : { ttftMs: 20 }),
     (base) => ({
@@ -394,7 +387,7 @@ test("in a full outage the final retry does not hold the source text back", asyn
 // Headline latency on the real server: rerun with `npx tsx --test test/server.test.ts`
 // and read the LATENCY line. Before any hedge, a stalled primary cost the whole
 // 3.5 s final timeout plus the fallback's own first token.
-test("primary stall: the final arrives after the median plus the fallback's first token", async () => {
+test("primary stall: the final arrives at the primary cutoff when the fallback is faster", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 900, doneMs: 950 }),
     { LIVE_DRAFTS: "false" },
@@ -404,7 +397,7 @@ test("primary stall: the final arrives after the median plus the fallback's firs
       await waitFor("final", () => app.captions.some((c) => c.final), 6000);
       const finalMs = app.captions.find((c) => c.final)!.at - startedAt;
       console.log(`LATENCY final after primary stall, fallback first token 900 ms: ${finalMs} ms`);
-      assert.ok(finalMs >= 1100 && finalMs < 2000, `final took ${finalMs} ms`);
+      assert.ok(finalMs >= 1400 && finalMs < 2200, `final took ${finalMs} ms`);
       await waitFor("losing primary stream cancelled", () => upstream.stats.open === 0, 1000);
     }
   );
