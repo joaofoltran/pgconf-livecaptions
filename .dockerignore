@@ -5,6 +5,7 @@ node_modules
 caddy_data
 caddy_config
 coverage
+data
 dist
 docs
 test

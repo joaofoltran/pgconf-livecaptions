@@ -17,6 +17,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY public ./public
 COPY config ./config
+# A new named volume copies this directory's owner, so the app can write to it.
+RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
 EXPOSE 3000

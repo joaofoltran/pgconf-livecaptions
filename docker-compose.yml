@@ -11,6 +11,8 @@ services:
       - "3000"
     volumes:
       - ./config:/app/config:ro
+      # Opt-in room term stats (docs/TERM_STATS.md). Survives redeploys.
+      - app_data:/app/data
     read_only: true
     tmpfs:
       - /tmp
@@ -55,5 +57,6 @@ services:
         max-file: "3"
 
 volumes:
+  app_data:
   caddy_data:
   caddy_config:

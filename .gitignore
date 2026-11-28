@@ -8,6 +8,7 @@ coverage/
 !.env.test.example
 
 test-audio/
+data/
 caddy_data/
 caddy_config/
 *.log
