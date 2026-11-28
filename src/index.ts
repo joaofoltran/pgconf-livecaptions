@@ -290,6 +290,8 @@ adminApi.post("/reset/:room", requireSameOrigin, (req, res) => {
   room.lastCaption = null;
   room.lastFinalAt = 0;
   room.epoch++;
+  // Finals from before the reset are dropped, so the new session's need not wait for them.
+  room.finalShown = Promise.resolve();
   room.pending = "";
   room.lastSource = null;
   room.lastTranslation = null;
@@ -1012,7 +1014,8 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
         room.lastTranslation = translated;
       }
       const holdMs = room.lastFinalAt + config.minFinalDisplayMs - Date.now();
-      if (holdMs > 0 && room.finalsWaiting <= MAX_FINALS_HELD) {
+      // A final that won't be shown must not hold up the ones after it.
+      if (room.epoch === epoch && holdMs > 0 && room.finalsWaiting <= MAX_FINALS_HELD) {
         await new Promise((resolve) => setTimeout(resolve, holdMs));
       }
     } finally {

@@ -294,8 +294,11 @@ test("a final still translating when the room is reset never reaches the new ses
       app.sayFinal("Okay.");
       await new Promise((resolve) => setTimeout(resolve, 500));
       await app.reset();
+      const resetAt = Date.now();
       app.sayFinal("five six seven.");
       await waitFor("the first final after the reset", () => app.captions.some((c) => c.final), 3000);
+      const firstAfter = app.captions.find((c) => c.final)!.at - resetAt;
+      assert.ok(firstAfter < 400, `the first final after the reset waited ${firstAfter} ms for the old ones`);
       await new Promise((resolve) => setTimeout(resolve, 1500));
       assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), ["five six seven."]);
       assert.deepEqual((await app.transcript()).map((l) => l.original), ["five six seven."]);
