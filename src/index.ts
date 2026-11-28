@@ -582,6 +582,9 @@ function handleDeepgramMessage(room: Room, raw: string): void {
   } catch {
     return;
   }
+  // Same guard as the capture path: a throw here escapes the ws 'message'
+  // listener and crashes the process.
+  if (!data || typeof data !== "object") return;
 
   if (data.type === "UtteranceEnd") {
     void flushPending(room, room.capture);
@@ -589,7 +592,10 @@ function handleDeepgramMessage(room: Room, raw: string): void {
   }
   if (data.type !== "Results") return;
 
-  const heard = data.channel?.alternatives?.[0]?.transcript?.trim();
+  const transcript: unknown = data.channel?.alternatives?.[0]?.transcript;
+  if (typeof transcript !== "string") return;
+  // Cut rather than drop: this is the real speech source, unlike a capture client.
+  const heard = transcript.trim().slice(0, MAX_CAPTION_TEXT_CHARS);
   if (!heard) return;
   const text = fixTranscript(heard);
   if (room.capture) sendJson(room.capture, { type: "transcript", text });
