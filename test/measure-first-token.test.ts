@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
+function fromLogs(input: string): string {
+  const run = spawnSync(process.execPath, ["--import", "tsx", "src/measure-first-token.ts", "--from-logs"], {
+    input,
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 0, run.stderr);
+  return run.stdout.trim();
+}
+
 test("--from-logs reads the app's first-token lines and counts cut-offs as slowest", () => {
   const logs = [
     "app-1  | first token room-1 draft gpt-oss-120b 200 ms",
@@ -11,10 +20,12 @@ test("--from-logs reads the app's first-token lines and counts cut-offs as slowe
     "app-1  | first token room-1 draft gpt-oss-120b 250 ms",
     "app-1  | first token room-1 draft gpt-oss-120b 260 ms",
   ].join("\n");
-  const run = spawnSync(process.execPath, ["--import", "tsx", "src/measure-first-token.ts", "--from-logs"], {
-    input: logs,
-    encoding: "utf8",
-  });
-  assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), "gpt-oss-120b: n=5 median=260 ms p90=cut off cut off=1");
+  assert.equal(fromLogs(logs), "gpt-oss-120b: n=5 median=260 ms p90=cut off cut off=1");
+});
+
+test("--from-logs averages the middle two samples for an even count, and p90 is not the maximum", () => {
+  const lines = (values: number[]) => values.map((ms) => `first token room-1 draft gpt-oss-120b ${ms} ms`).join("\n");
+  assert.equal(fromLogs(lines([400, 100, 300, 200])), "gpt-oss-120b: n=4 median=250 ms p90=370 ms cut off=0");
+  const ten = Array.from({ length: 10 }, (_, i) => (i + 1) * 100);
+  assert.equal(fromLogs(lines(ten)), "gpt-oss-120b: n=10 median=550 ms p90=910 ms cut off=0");
 });

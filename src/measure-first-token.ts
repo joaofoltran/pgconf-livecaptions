@@ -21,11 +21,16 @@ const SAMPLES = [
 ];
 
 // A cut-off request is Infinity: it counts as slower than every answer.
+// Percentiles interpolate between the two nearest samples (the spreadsheet
+// PERCENTILE.INC rule), so an even count's median is the mean of the middle two.
 function summary(samples: number[]): string {
   const sorted = [...samples].sort((a, b) => a - b);
   const at = (p: number) => {
-    const v = sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
-    return Number.isFinite(v) ? `${v} ms` : "cut off";
+    const rank = p * (sorted.length - 1);
+    const lo = sorted[Math.floor(rank)];
+    const hi = sorted[Math.ceil(rank)];
+    const v = lo === hi ? lo : lo + (hi - lo) * (rank - Math.floor(rank));
+    return Number.isFinite(v) ? `${Math.round(v)} ms` : "cut off";
   };
   const cut = sorted.filter((v) => !Number.isFinite(v)).length;
   return `n=${sorted.length} median=${at(0.5)} p90=${at(0.9)} cut off=${cut}`;
