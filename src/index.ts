@@ -72,6 +72,7 @@ for (const id of config.rooms) {
 // Docker mounts a named volume at /app/data; the rest of the container is read-only.
 const termStats = new TermStats({
   dir: path.resolve(process.cwd(), "data/term-stats"),
+  rooms: config.rooms,
   enabledRooms: config.termStatsRooms,
   sampleMaxLines: config.roomSampleMaxLines,
 });

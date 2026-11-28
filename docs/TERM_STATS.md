@@ -176,6 +176,28 @@ Like the room reset, the request must come from the same origin. Clearing
 deletes the room's file. If the room is still opted in, collection starts again
 from zero with the next sentence.
 
+## Rooms removed from `ROOMS`
+
+Removing a room from `ROOMS` does not delete its term file. The admin
+dashboard and the export and clear endpoints only know configured rooms, so
+that file can no longer be exported or cleared from `/admin`. At startup the
+app logs a warning naming such files:
+
+```text
+term stats: old-room.json in /app/data/term-stats belong to rooms not in ROOMS; kept, ...
+```
+
+Nothing is deleted automatically. Before removing a room, export and clear it
+from `/admin`. For a file left behind, either:
+
+- add the room back to `ROOMS` (with its `TOKEN_<ROOM>`), recreate the app,
+  then export and clear it from `/admin`; or
+- delete the file directly:
+
+  ```bash
+  docker compose exec app rm /app/data/term-stats/<room>.json
+  ```
+
 ## Backups
 
 The volume holds speech-derived data, so treat a copy like a transcript. Export

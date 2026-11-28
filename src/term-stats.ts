@@ -86,6 +86,7 @@ export type TermStatsSnapshot = {
 
 export type TermStatsOptions = {
   dir: string;
+  rooms: readonly string[];
   enabledRooms: readonly string[];
   sampleMaxLines: number;
   maxTerms?: number;
@@ -115,9 +116,21 @@ export class TermStats {
     this.maxTerms = options.maxTerms ?? MAX_TERMS;
     this.flushMs = options.flushMs ?? 5000;
     this.retryMs = this.flushMs;
+    const names = this.listDir();
     // A crash mid-write can leave a temp file holding speech text.
-    for (const name of this.listDir()) {
+    for (const name of names) {
       if (name.endsWith(".json.tmp")) this.remove(path.join(this.dir, name));
+    }
+    // Never deleted automatically: removing a room from ROOMS is not consent
+    // to drop its data, and the admin can no longer export or clear it.
+    const orphans = names.filter(
+      (name) => name.endsWith(".json") && !options.rooms.includes(name.slice(0, -".json".length))
+    );
+    if (orphans.length) {
+      console.warn(
+        `term stats: ${orphans.join(", ")} in ${this.dir} belong to rooms not in ROOMS; ` +
+          "kept, but they cannot be exported or cleared from /admin (see docs/TERM_STATS.md)"
+      );
     }
     // Load now so an unreadable file shows in the admin status at startup.
     for (const room of this.enabledRooms) {

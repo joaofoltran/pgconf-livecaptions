@@ -7,7 +7,13 @@ import { TermStats, termStatsText, type TermStatsOptions } from "../src/term-sta
 
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "term-stats-"));
 const open = (dir: string, options: Partial<TermStatsOptions> = {}) =>
-  new TermStats({ dir, enabledRooms: ["room-1"], sampleMaxLines: 5, ...options });
+  new TermStats({
+    dir,
+    rooms: ["room-1", "room-2"],
+    enabledRooms: ["room-1"],
+    sampleMaxLines: 5,
+    ...options,
+  });
 const countOf = (stats: TermStats, room: string, term: string) =>
   stats.snapshot(room).terms.find((t) => t.term === term)?.count;
 
@@ -93,6 +99,20 @@ test("leftover temp files count as stored data and are removed", () => {
   stats.clear("room-1");
   assert.equal(fs.existsSync(tmp), false, "removed by clear");
   assert.equal(stats.hasStoredData("room-1"), false);
+});
+
+test("files of rooms no longer in ROOMS are logged and kept", (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "old-room.json"), '{"terms":{},"sample":[]}');
+  fs.writeFileSync(path.join(dir, "room-2.json"), '{"terms":{},"sample":[]}');
+  open(dir);
+
+  assert.equal(warnings.mock.callCount(), 1);
+  const message = String(warnings.mock.calls[0].arguments[0]);
+  assert.match(message, /old-room\.json/);
+  assert.doesNotMatch(message, /room-2/);
+  assert.equal(fs.existsSync(path.join(dir, "old-room.json")), true);
 });
 
 test("a corrupt file is reported once, never overwritten, and clearable", (t) => {
