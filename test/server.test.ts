@@ -180,6 +180,28 @@ test("a failed final write on SIGTERM is logged and exits 1", { timeout: 15_000 
   assert.match(server.output(), /final write failed on shutdown/);
 });
 
+test("a bad frame on a rejected socket does not crash the server", { timeout: 15_000 }, async (t) => {
+  const server = await startServer(tempDir());
+  t.after(() => server.child.kill("SIGKILL"));
+
+  for (const target of ["/ws", "/ws?room=nope&k=x", `/ws?room=room-1&k=wrong-token`]) {
+    // Raw socket: the upgrade request and, right behind it, a frame with the
+    // reserved opcode 3, so it reaches the server after the 4401 rejection.
+    const socket = net.connect(server.port, "127.0.0.1");
+    socket.write(
+      `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n` +
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    socket.write(Buffer.from([0x83, 0x80, 0, 0, 0, 0]));
+    socket.resume();
+    await once(socket, "close");
+  }
+
+  assert.equal((await fetch(`${server.base}/health`)).status, 200);
+  assert.equal(server.child.exitCode, null);
+});
+
 test("capture input is bounded and malformed messages are ignored", { timeout: 15_000 }, async (t) => {
   const server = await startServer(tempDir());
   t.after(() => server.child.kill("SIGKILL"));

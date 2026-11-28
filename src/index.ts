@@ -318,6 +318,11 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 64 * 1024 });
 
 wss.on("connection", (ws, req) => {
+  // First, before auth: a rejected socket keeps parsing frames, and an
+  // unhandled 'error' (invalid frame, over maxPayload) would crash the process.
+  ws.on("error", (err) => {
+    console.error("ws error", err);
+  });
   const url = new URL(req.url ?? "", "http://localhost");
   const room = getRoom(url.searchParams.get("room") ?? undefined);
   const token = url.searchParams.get("k") ?? "";
@@ -375,10 +380,6 @@ wss.on("connection", (ws, req) => {
       }
     });
   }
-
-  ws.on("error", (err) => {
-    console.error("ws error", room.id, err);
-  });
 });
 
 function parseDirection(value: unknown): Direction {
