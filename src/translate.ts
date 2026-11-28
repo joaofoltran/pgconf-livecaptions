@@ -56,6 +56,201 @@ export type TranslateOptions = {
   prefix?: string;
 };
 
+function linkAbort(parent: AbortSignal | undefined, child: AbortController): () => void {
+  if (!parent) return () => {};
+  const onAbort = () => child.abort(parent.reason);
+  if (parent.aborted) {
+    onAbort();
+    return () => {};
+  }
+  parent.addEventListener("abort", onAbort, { once: true });
+  return () => parent.removeEventListener("abort", onAbort);
+}
+
+type Attempt = {
+  promise: Promise<string>;
+  firstToken: Promise<void>;
+  hasToken: () => boolean;
+  timedOut: () => boolean;
+  abort: () => void;
+};
+
+function startAttempt(
+  config: AppConfig,
+  text: string,
+  direction: Direction,
+  options: TranslateOptions,
+  provider: Provider,
+  timeoutMs: number,
+  onPartial: (partial: string) => void
+): Attempt {
+  const abort = new AbortController();
+  const unlink = linkAbort(options.signal, abort);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, timeoutMs);
+  let gotToken = false;
+  let markToken!: () => void;
+  const firstToken = new Promise<void>((resolve) => (markToken = resolve));
+
+  const promise = translateCaption(config, text, direction, {
+    ...options,
+    provider,
+    signal: abort.signal,
+    onPartial: (partial) => {
+      if (!gotToken) {
+        gotToken = true;
+        markToken();
+      }
+      onPartial(partial);
+    },
+  }).finally(() => {
+    clearTimeout(timer);
+    unlink();
+  });
+  promise.catch(() => {});
+  return { promise, firstToken, hasToken: () => gotToken, timedOut: () => timedOut, abort: () => abort.abort() };
+}
+
+export type HedgeOptions = TranslateOptions & {
+  fallback?: Provider | null;
+  // With a fallback: start it if the preferred provider has streamed nothing by
+  // fallbackAfterMs, and abort the preferred provider if it has streamed nothing
+  // by cutoffMs. Without a fallback, only timeoutMs applies.
+  fallbackAfterMs: number;
+  cutoffMs: number;
+  timeoutMs: number;
+  fallbackTimeoutMs?: number;
+  skipPreferred?: boolean;
+  // Called at most once per call: when the preferred provider rejects or is cut
+  // off. Caller aborts are not failures.
+  onPreferredFailure?: (why: string, err?: unknown) => void;
+  onPreferredSuccess?: () => void;
+  // Milliseconds to the preferred provider's first token, or null when it was cut off.
+  onPreferredFirstToken?: (ms: number | null) => void;
+  // The fallback finished while the preferred provider has sent no text and may still replace it.
+  onFallbackDone?: (translated: string) => void;
+};
+
+// Send to the preferred provider only. If it streams nothing by fallbackAfterMs,
+// start the fallback; its text shows until the preferred provider streams. The
+// preferred provider wins whenever it streams before cutoffMs: the fallback is
+// aborted and its text replaced. Past the cutoff, the preferred provider is
+// aborted and the fallback stays. A preferred stream that fails after its first
+// token continues on the fallback from the text already emitted.
+export async function translateWithHedge(
+  config: AppConfig,
+  text: string,
+  direction: Direction,
+  options: HedgeOptions
+): Promise<string> {
+  const fallback = options.fallback ?? null;
+  const fallbackTimeoutMs = options.fallbackTimeoutMs ?? options.timeoutMs;
+  const callerAborted = () => options.signal?.aborted === true;
+  const state = { emitted: "", reported: false };
+  const reportFailure = (why: string, err?: unknown) => {
+    if (state.reported || callerAborted()) return;
+    state.reported = true;
+    options.onPreferredFailure?.(why, err);
+  };
+  const emit = (partial: string) => {
+    state.emitted = partial;
+    options.onPartial?.(partial);
+  };
+  // A hedged fallback's text shows only until the attempt it yields to streams.
+  const startFallback = (opts: TranslateOptions = options, yieldTo?: Attempt) =>
+    startAttempt(config, text, direction, opts, fallback!, fallbackTimeoutMs, (partial) => {
+      if (!yieldTo?.hasToken()) emit(partial);
+    });
+
+  if (options.skipPreferred) {
+    if (!fallback) throw new Error("Preferred provider skipped and no fallback is configured");
+    return startFallback().promise;
+  }
+
+  const startedAt = Date.now();
+  let backup: Attempt | null = null;
+  let backupText: string | null = null;
+  let cutOff = false;
+  const cutOffPreferred = () => {
+    cutOff = true;
+    options.onPreferredFirstToken?.(null);
+    reportFailure("no first token");
+  };
+  const timers: NodeJS.Timeout[] = [];
+  const preferred = startAttempt(
+    config,
+    text,
+    direction,
+    options,
+    options.provider ?? primaryProvider(config),
+    options.timeoutMs,
+    emit
+  );
+  const settled = preferred.promise.then(
+    () => {},
+    (err) => {
+      if (cutOff) return;
+      // Its own timeout with no text yet is the same event as the cutoff.
+      if (!preferred.hasToken() && preferred.timedOut()) cutOffPreferred();
+      else reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
+    }
+  );
+  void preferred.firstToken.then(() => {
+    timers.forEach(clearTimeout);
+    backup?.abort();
+    options.onPreferredFirstToken?.(Date.now() - startedAt);
+  });
+
+  const startBackup = () => {
+    const attempt = startFallback(options, preferred);
+    attempt.promise.then(
+      (out) => {
+        backupText = out;
+        if (!preferred.hasToken() && !cutOff && !callerAborted()) options.onFallbackDone?.(out);
+      },
+      () => {}
+    );
+    return attempt;
+  };
+
+  if (fallback) {
+    timers.push(
+      setTimeout(() => {
+        if (!preferred.hasToken()) backup ??= startBackup();
+      }, options.fallbackAfterMs),
+      setTimeout(() => {
+        if (preferred.hasToken()) return;
+        cutOffPreferred();
+        preferred.abort();
+      }, options.cutoffMs)
+    );
+  }
+
+  // Decide only once the preferred provider has streamed or failed, so the
+  // fallback cannot win before the cutoff.
+  await Promise.race([preferred.firstToken, settled]);
+  timers.forEach(clearTimeout);
+
+  if (!preferred.hasToken()) {
+    if (callerAborted() || !fallback) return preferred.promise;
+    backup ??= startBackup();
+    return backup.promise;
+  }
+  try {
+    const out = await preferred.promise;
+    options.onPreferredSuccess?.();
+    return out;
+  } catch (err) {
+    if (callerAborted() || !fallback) throw err;
+    // The fallback finished before the preferred provider's first word: keep its result.
+    if (backupText !== null) return backupText;
+    return startFallback({ ...options, prefix: state.emitted.trim() || options.prefix }).promise;
+  }
+}
+
 export async function translateCaption(
   config: AppConfig,
   text: string,
@@ -88,12 +283,13 @@ export async function translateCaption(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      // Extra fields come first: they must not override the request's own fields.
+      ...provider.extraBody,
       model: provider.model,
       temperature: 0,
       max_tokens: 400,
       stream: true,
       ...(provider.serviceTier ? { service_tier: provider.serviceTier } : {}),
-      ...provider.extraBody,
       messages: [
         {
           role: "system",

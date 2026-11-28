@@ -4,17 +4,29 @@ import { loadConfig, tokenEnvName } from "../src/config.js";
 
 const managedVariables = [
   "ADMIN_PASSWORD",
+  "BREAKER_FAILURE_THRESHOLD",
+  "BREAKER_OPEN_MS",
+  "BREAKER_WINDOW_MS",
   "DEEPGRAM_API_KEY",
   "DOMAIN",
   "DRAFT_INTERVAL_MS",
   "DRAFTS_PER_SECOND",
   "FALLBACK_API_KEY",
+  "FALLBACK_BASE_URL",
+  "FALLBACK_EXTRA_BODY",
+  "FALLBACK_MODEL",
+  "FALLBACK_START_MS",
+  "FIRST_TOKEN_MS",
   "FINAL_API_KEY",
   "LIVE_DRAFTS",
+  "MIN_FINAL_DISPLAY_MS",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_EXTRA_BODY",
   "PORT",
+  "PRIMARY_CUTOFF_MS",
+  "PRIMARY_CUTOFF_MULTIPLIER",
+  "PRIMARY_MEDIAN_FIRST_TOKEN_MS",
   "ROOMS",
   "SESSION_SECRET",
   "STT_PROXY",
@@ -57,6 +69,46 @@ test("loadConfig accepts a valid minimal environment", () => {
   assert.equal(config.port, 3000);
   assert.equal(config.sttProxy, true);
   assert.equal(config.liveDrafts, true);
+  assert.equal(config.fallbackStartMs, 500);
+  assert.equal(config.primaryCutoffMs, 1500);
+});
+
+test("the fallback start and primary cutoff are checked at startup", () => {
+  process.env.FALLBACK_START_MS = "400";
+  process.env.PRIMARY_CUTOFF_MS = "1200";
+  assert.equal(loadConfig().fallbackStartMs, 400);
+  assert.equal(loadConfig().primaryCutoffMs, 1200);
+
+  process.env.PRIMARY_CUTOFF_MS = "400";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS/);
+
+  // Equal to the 3000 ms draft timeout, which would end drafts before the cutoff.
+  process.env.PRIMARY_CUTOFF_MS = "3000";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be an integer between 50 and 2999/);
+
+  delete process.env.FALLBACK_START_MS;
+  delete process.env.PRIMARY_CUTOFF_MS;
+  for (const old of ["FIRST_TOKEN_MS", "PRIMARY_MEDIAN_FIRST_TOKEN_MS", "PRIMARY_CUTOFF_MULTIPLIER"]) {
+    process.env[old] = "600";
+    assert.throws(() => loadConfig(), new RegExp(`${old} was replaced by FALLBACK_START_MS and PRIMARY_CUTOFF_MS`));
+    delete process.env[old];
+  }
+});
+
+test("a fallback key without its base URL and model fails at startup", () => {
+  process.env.FALLBACK_API_KEY = "fallback-test-key";
+  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_BASE_URL and FALLBACK_MODEL are not set/);
+
+  process.env.FALLBACK_BASE_URL = "https://api.groq.com/openai/v1";
+  assert.throws(() => loadConfig(), /FALLBACK_API_KEY is set but FALLBACK_MODEL is not set/);
+
+  process.env.FALLBACK_MODEL = "openai/gpt-oss-120b";
+  assert.deepEqual(loadConfig().fallback, {
+    baseUrl: "https://api.groq.com/openai/v1",
+    apiKey: "fallback-test-key",
+    model: "openai/gpt-oss-120b",
+    extraBody: {},
+  });
 });
 
 test("loadConfig rejects duplicate and malformed room slugs", () => {
@@ -88,6 +140,17 @@ test("loadConfig rejects invalid numeric, boolean, and JSON settings", () => {
   assert.throws(() => loadConfig(), /STT_PROXY must be true or false/);
 
   delete process.env.STT_PROXY;
+  process.env.BREAKER_FAILURE_THRESHOLD = "0";
+  assert.throws(() => loadConfig(), /BREAKER_FAILURE_THRESHOLD must be an integer between 1 and 100/);
+
+  delete process.env.BREAKER_FAILURE_THRESHOLD;
+  // A 6 s request started before the breaker opened would otherwise settle during the retry.
+  process.env.BREAKER_OPEN_MS = "6000";
+  assert.throws(() => loadConfig(), /BREAKER_OPEN_MS must be an integer between 7000 and 600000/);
+  process.env.BREAKER_OPEN_MS = "7000";
+  assert.equal(loadConfig().breakerOpenMs, 7000);
+
+  delete process.env.BREAKER_OPEN_MS;
   process.env.OPENAI_EXTRA_BODY = "[]";
   assert.throws(() => loadConfig(), /OPENAI_EXTRA_BODY must be a JSON object/);
 });
@@ -98,4 +161,12 @@ test("loadConfig validates provider URLs and trims trailing slashes", () => {
 
   process.env.OPENAI_BASE_URL = "file:///tmp/provider";
   assert.throws(() => loadConfig(), /OPENAI_BASE_URL must use http or https/);
+});
+
+test("an empty MIN_FINAL_DISPLAY_MS means the 1.5 s default, not zero", () => {
+  process.env.MIN_FINAL_DISPLAY_MS = "";
+  assert.equal(loadConfig().minFinalDisplayMs, 1500);
+
+  process.env.MIN_FINAL_DISPLAY_MS = "0";
+  assert.equal(loadConfig().minFinalDisplayMs, 0);
 });

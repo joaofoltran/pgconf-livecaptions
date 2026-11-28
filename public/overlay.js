@@ -14,9 +14,55 @@ let live = "";
 let liveSeq = 0;
 let hideTimer = null;
 let liveShown = "";
+let liveTarget = "";
+let pendingFinal = false;
+let paceTimer = null;
+
+const PACE_WORD_MS = 50;
+
+// Words already on screen are revised in place ("Post" to "PostgreSQL"), so the
+// line never shrinks to retype them. New words appear one per tick, several when
+// far behind so a large chunk does not trail the speaker.
+function nextPacedCaption(shown, target) {
+  if (target === shown || !target) return target;
+  const targetWords = target.trim().split(/\s+/);
+  const shownCount = shown.trim().split(/\s+/).filter(Boolean).length;
+  const behind = targetWords.length - shownCount;
+  const n = shownCount + (behind > 8 ? Math.ceil(behind / 4) : 1);
+  return n >= targetWords.length ? target : targetWords.slice(0, n).join(" ");
+}
 
 const escapeHtml = (s) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+function stopPace() {
+  if (paceTimer != null) {
+    clearTimeout(paceTimer);
+    paceTimer = null;
+  }
+}
+
+function promoteFinal() {
+  committed = liveTarget || live;
+  live = "";
+  liveTarget = "";
+  liveShown = "";
+  pendingFinal = false;
+  render();
+}
+
+function paceTick() {
+  paceTimer = null;
+  live = nextPacedCaption(live, liveTarget);
+  render();
+  if (live !== liveTarget) paceTimer = setTimeout(paceTick, PACE_WORD_MS);
+  else if (pendingFinal) promoteFinal();
+}
+
+function startPace() {
+  if (paceTimer != null) return;
+  paceTick();
+}
 
 // The server locks the start of the sentence, so usually only the tail changes:
 // fade it in instead of flashing the entire line.
@@ -47,8 +93,11 @@ function render() {
 function scheduleHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
+    stopPace();
     committed = "";
     live = "";
+    liveTarget = "";
+    pendingFinal = false;
     render();
   }, 10000);
 }
@@ -65,24 +114,31 @@ function connect() {
       return;
     }
     if (msg.type === "clear") {
+      stopPace();
       committed = "";
       live = "";
+      liveTarget = "";
       liveSeq = 0;
+      pendingFinal = false;
       render();
       return;
     }
     if (msg.type === "caption") {
       const text = msg.translated || msg.original || "";
       const seq = Number(msg.seq ?? 0);
-      if (msg.final) {
+      // Any other sequence is a new sentence; it must not overwrite a final that is
+      // still pacing out. Non-finals are always accepted: the server orders them,
+      // and after a server restart their sequence numbers start over.
+      if (pendingFinal && seq !== liveSeq) promoteFinal();
+      if (msg.final && seq < liveSeq) {
         committed = text;
-        // Clear the live line only if it belongs to this sentence; keep the next one.
-        if (seq >= liveSeq) live = "";
+        render();
       } else {
-        live = text;
+        liveTarget = text;
         liveSeq = seq;
+        pendingFinal = Boolean(msg.final);
+        startPace();
       }
-      render();
       scheduleHide();
     }
   };

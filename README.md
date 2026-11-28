@@ -257,11 +257,14 @@ The primary provider is configured through `OPENAI_*`. Despite that prefix,
 these variables accept any OpenAI-compatible service; `OPENAI_API_KEY` contains
 the primary provider's key, not necessarily an OpenAI key.
 
-### Production-tested setup: Cerebras primary, OpenAI fallback
+### Recommended setup: Cerebras primary, Groq fallback
 
-The original conference deployment used Cerebras `gpt-oss-120b` for normal
-draft and final translation, with OpenAI `gpt-4.1-mini` used only when Cerebras
-timed out or failed:
+Cerebras `gpt-oss-120b` handles normal draft and final translation. Groq
+`openai/gpt-oss-120b` is the recommended fallback: if Cerebras has sent no text
+after `FALLBACK_START_MS` (default 500 ms), the app also asks Groq. Cerebras's
+text still replaces Groq's if Cerebras starts before `PRIMARY_CUTOFF_MS`
+(default 1500 ms); after that Cerebras is cancelled and Groq's caption stays. The defaults are chosen values, not
+measurements; see `docs/OPERATIONS.md` to measure them.
 
 ```dotenv
 OPENAI_BASE_URL=https://api.cerebras.ai/v1
@@ -270,18 +273,17 @@ OPENAI_MODEL=gpt-oss-120b
 OPENAI_EXTRA_BODY='{"reasoning_effort":"low"}'
 OPENAI_SERVICE_TIER=
 
-FALLBACK_BASE_URL=https://api.openai.com/v1
-FALLBACK_API_KEY=your-openai-key
-FALLBACK_MODEL=gpt-4.1-mini
-FALLBACK_EXTRA_BODY=
+FALLBACK_BASE_URL=https://api.groq.com/openai/v1
+FALLBACK_API_KEY=your-groq-key
+FALLBACK_MODEL=openai/gpt-oss-120b
+FALLBACK_EXTRA_BODY='{"reasoning_effort":"low"}'
 ```
 
-We chose this arrangement because OpenAI was the latency bottleneck in our
-September 2026 tests from a Sao Paulo VPS. On noisy real-event transcripts,
-Cerebras `gpt-oss-120b` produced similarly faithful translations in roughly
-305 ms versus 751 ms for OpenAI `gpt-4.1-mini`. OpenAI remained valuable as a
-fallback: it was slower, but prevented a Cerebras stall from dropping the final
-caption entirely.
+The original September 2026 deployment used OpenAI `gpt-4.1-mini` as the
+fallback instead. From a Sao Paulo VPS, Cerebras `gpt-oss-120b` produced
+similarly faithful translations of noisy real-event transcripts in roughly
+305 ms versus 751 ms for OpenAI `gpt-4.1-mini`. Running the same model family on
+the fallback keeps wording consistent when captions switch providers.
 
 These numbers are historical measurements, not a promise of current provider
 performance. Test both quality and latency from your venue and accounts.
@@ -297,9 +299,9 @@ OPENAI_MODEL=gpt-4.1-mini
 ```
 
 Optional `FINAL_*` settings can send finalized phrases to a separate provider.
-Optional `FALLBACK_*` settings protect final captions when the primary provider
-times out or fails. Provider-specific request fields can be supplied as JSON
-through `*_EXTRA_BODY`.
+Optional `FALLBACK_*` settings protect draft and final captions when the
+primary provider stalls or fails. Provider-specific request fields can be
+supplied as JSON through `*_EXTRA_BODY`.
 
 Compatibility is not guaranteed merely because a provider accepts
 OpenAI-shaped requests: this app depends on streamed chat completion chunks,

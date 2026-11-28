@@ -28,13 +28,26 @@ export type Room = {
   draftSource: string;
   draftCandidate: string;
   draftTimer: NodeJS.Timeout | null;
-  draftsInFlight: Map<AbortController, { source: string; promise: Promise<string> }>;
+  draftsInFlight: Map<
+    AbortController,
+    // awaited: an earlier sentence's flush is waiting on this draft as its final.
+    { source: string; promise: Promise<string>; gotToken: boolean; startedAt: number; awaited: boolean }
+  >;
   lastDraft: { source: string; translated: string } | null;
   lastDraftSeq: number;
+  // Bumped on every flush: a draft from an earlier sentence must not touch draft state.
+  sentence: number;
   // Start of the current sentence's translation repeated in two consecutive drafts:
   // lock it and have the model continue from there so the live line only grows.
   lockedPrefix: string;
   renderedFinalSeq: number;
+  // Settles once the latest flushed sentence's final has been sent.
+  finalShown: Promise<void>;
+  // When the last final was sent, and how many translated finals wait to be sent.
+  lastFinalAt: number;
+  finalsWaiting: number;
+  // Bumped by a reset or a capture disconnect: finals queued before it are not shown.
+  epoch: number;
   // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;
   dgLastMsg: number;
@@ -65,8 +78,13 @@ export function createRoom(id: string, token: string): Room {
     draftsInFlight: new Map(),
     lastDraft: null,
     lastDraftSeq: 0,
+    sentence: 0,
     lockedPrefix: "",
     renderedFinalSeq: 0,
+    finalShown: Promise.resolve(),
+    lastFinalAt: 0,
+    finalsWaiting: 0,
+    epoch: 0,
     dg: null,
     dgLastMsg: 0,
     dgReconnectTimer: null,

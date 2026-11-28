@@ -87,8 +87,8 @@ The endpoint must support streamed OpenAI-compatible chat completions.
 
 The `OPENAI_*` names describe the API protocol used by the client. They do not
 require OpenAI to be the primary provider. For example, when Cerebras is
-primary, `OPENAI_API_KEY` contains the Cerebras key; the actual OpenAI key goes
-in `FALLBACK_API_KEY`.
+primary, `OPENAI_API_KEY` contains the Cerebras key, and the Groq key for the
+recommended fallback goes in `FALLBACK_API_KEY`.
 
 ### Primary provider
 
@@ -97,7 +97,7 @@ in `FALLBACK_API_KEY`.
 | `OPENAI_API_KEY` | none | Required provider credential. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API root without a trailing slash. |
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Model used for drafts and, by default, finals. |
-| `OPENAI_EXTRA_BODY` | empty object | JSON object merged into every request body. |
+| `OPENAI_EXTRA_BODY` | empty object | JSON fields added to every request body; keys that collide with the request's own fields are ignored. |
 | `OPENAI_SERVICE_TIER` | empty | Optional OpenAI service tier, such as `priority`. |
 
 OpenAI example:
@@ -110,9 +110,7 @@ OPENAI_EXTRA_BODY=
 OPENAI_SERVICE_TIER=
 ```
 
-### Production-tested: Cerebras primary with OpenAI fallback
-
-The original conference production configuration was:
+### Recommended: Cerebras primary with Groq fallback
 
 ```dotenv
 OPENAI_BASE_URL=https://api.cerebras.ai/v1
@@ -121,14 +119,17 @@ OPENAI_MODEL=gpt-oss-120b
 OPENAI_EXTRA_BODY='{"reasoning_effort":"low"}'
 OPENAI_SERVICE_TIER=
 
-FALLBACK_BASE_URL=https://api.openai.com/v1
-FALLBACK_API_KEY=your-openai-key
-FALLBACK_MODEL=gpt-4.1-mini
-FALLBACK_EXTRA_BODY=
+FALLBACK_BASE_URL=https://api.groq.com/openai/v1
+FALLBACK_API_KEY=your-groq-key
+FALLBACK_MODEL=openai/gpt-oss-120b
+FALLBACK_EXTRA_BODY='{"reasoning_effort":"low"}'
 ```
 
-Use valid JSON for `OPENAI_EXTRA_BODY`. Single quotes around the complete JSON
+Use valid JSON for `*_EXTRA_BODY`. Single quotes around the complete JSON
 value work with both the Node dotenv parser and Docker Compose.
+
+The original September 2026 deployment used OpenAI `gpt-4.1-mini` as the
+fallback; the measurements below come from that setup.
 
 #### Why this arrangement
 
@@ -144,10 +145,13 @@ On noisy transcripts from the real event, Cerebras `gpt-oss-120b` with
 normal translation path for captions that needed to grow several times per
 second.
 
-OpenAI was deliberately kept as the fallback rather than removed. If Cerebras
-timed out or failed, a slower recovered final caption was preferable to no
-final caption. The app aborts a stalled primary final request and retries it
-through `FALLBACK_*`.
+A fallback is kept because Cerebras can stall. If Cerebras has sent no text
+after `FALLBACK_START_MS` (default 500 ms), the app also asks the fallback, and
+it cancels Cerebras if it has still sent nothing after `PRIMARY_CUTOFF_MS`
+(default 1500 ms). A stalled caption then recovers in about 1.5 seconds
+instead of waiting for the whole request timeout.
+The recommended fallback runs the same `gpt-oss-120b` model family on Groq, so
+wording stays consistent when captions switch providers.
 
 These results are historical and provider performance changes over time. Use
 the latency script and real-event recordings to validate the choice for your
@@ -172,7 +176,7 @@ completed phrases use this provider:
 | `FINAL_API_KEY` | empty / disabled | Enables the separate final provider. |
 | `FINAL_BASE_URL` | `https://api.openai.com/v1` | Final provider API root. |
 | `FINAL_MODEL` | `gpt-4.1-mini` | Final-caption model. |
-| `FINAL_EXTRA_BODY` | empty object | JSON fields merged into final requests. |
+| `FINAL_EXTRA_BODY` | empty object | JSON fields added to final requests; colliding keys are ignored. |
 | `FINAL_SERVICE_TIER` | empty | Optional service tier for final requests. |
 
 This mode can improve final quality, but changing providers between a draft and
@@ -181,26 +185,81 @@ real-event transcripts before enabling it.
 
 ### Fallback provider
 
-When `FALLBACK_API_KEY` is present, the server sends final captions to this
-provider after a primary timeout or failure:
+When `FALLBACK_API_KEY` is present, draft and final captions can fall back to
+this provider:
+
+1. Each request goes to the preferred provider only.
+2. If it has sent no text after `FALLBACK_START_MS`, the same request also goes
+   to the fallback, and the fallback's text is shown as soon as it arrives:
+   word by word for finals, and as a whole for drafts.
+3. If the preferred provider starts sending text before `PRIMARY_CUTOFF_MS`,
+   the fallback request is cancelled and the preferred provider's text replaces
+   the fallback's, even if the caption visibly rewrites. Finals are still
+   delivered once each and in order.
+4. At `PRIMARY_CUTOFF_MS`, a preferred provider that has sent no text is
+   cancelled and the fallback's caption stays.
+
+A preferred stream that fails after its first word uses the fallback's result
+if the fallback had already finished, and otherwise continues on the fallback
+from the text already shown.
+A final whose attempts all failed gets one more fallback attempt, which must
+start streaming within 1.5 seconds, before the source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
+whole timeout before falling back, because it is chosen for quality, not speed.
+Finals are shown in sentence order: a final that finishes before an earlier
+sentence's final waits for it, so a slow final is shown late instead of being
+dropped.
+
+A preferred-provider failure is a failed request, an error after the first
+word, or being cut off at `PRIMARY_CUTOFF_MS`. HTTP 429 responses to drafts do
+not count. `BREAKER_FAILURE_THRESHOLD` failures within `BREAKER_WINDOW_MS` open a
+circuit breaker for that provider: its drafts and finals go straight to the
+fallback, without waiting `FALLBACK_START_MS`, for `BREAKER_OPEN_MS`. After that,
+one retry request tries the preferred provider again while the rest stay on the
+fallback; if it succeeds, the preferred provider is used again, and if it fails,
+the breaker opens again. Without a fallback,
+`FALLBACK_START_MS` and `PRIMARY_CUTOFF_MS` have no effect: nothing is cut off
+and requests use their normal timeouts.
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FALLBACK_API_KEY` | empty / disabled | Enables failover. |
-| `FALLBACK_BASE_URL` | `https://api.openai.com/v1` | Fallback API root. |
-| `FALLBACK_MODEL` | `gpt-4.1-mini` | Fallback model. |
-| `FALLBACK_EXTRA_BODY` | empty object | JSON fields merged into fallback requests. |
+| `FALLBACK_BASE_URL` | none; required with a key | Fallback API root. Recommended: `https://api.groq.com/openai/v1`. |
+| `FALLBACK_MODEL` | none; required with a key | Fallback model. Recommended: `openai/gpt-oss-120b`. |
+| `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
+| `FALLBACK_START_MS` | `500` | Milliseconds without any text from the preferred provider before the fallback is also asked. 50–3000. |
+| `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–2999: below the 3000 ms draft timeout, and greater than `FALLBACK_START_MS`. |
+| `BREAKER_FAILURE_THRESHOLD` | `4` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
+| `BREAKER_WINDOW_MS` | `10000` | Window in milliseconds for counting those failures. 1000–600000. |
+| `BREAKER_OPEN_MS` | `20000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 7000–600000: longer than the longest request (6 s), so a request that started before the breaker opened can't close or reopen it during the retry. |
 
-Example with a compatible primary and OpenAI fallback:
+The defaults are João's chosen values, not measurements. Measure Cerebras's
+median time to first word from the venue with `measure-first-token` (see
+"Measuring first-token latency" in `docs/OPERATIONS.md`) and set
+`FALLBACK_START_MS` to it. `FIRST_TOKEN_MS`, `PRIMARY_MEDIAN_FIRST_TOKEN_MS` and
+`PRIMARY_CUTOFF_MULTIPLIER` were replaced by these two settings; the app refuses
+to start while any of them is still set.
+
+The breaker defaults come from simulations with mock providers, not from
+the venue, and João has not confirmed them yet. With live drafts on, a silent
+Cerebras opened the breaker about 5 seconds after it went quiet; when 1 answer in
+12 was slower than the cutoff, the breaker opened in 1 of 3 runs; and captions
+came back to Cerebras within the 20-second open time after it recovered. With
+`LIVE_DRAFTS=false` only finals are sent, about one every few seconds, so 4
+failures rarely fit in 10 seconds and the breaker never opened in the simulation.
+For that mode set `BREAKER_FAILURE_THRESHOLD=2` and `BREAKER_WINDOW_MS=15000`.
+
+The fallback base URL and model have no defaults, so a key is never sent to a
+provider it does not belong to. If `FALLBACK_API_KEY` is set without
+`FALLBACK_BASE_URL` or `FALLBACK_MODEL`, the app and the `./deploy.sh`
+configuration check fail at startup and name the missing variable. Extra-body
+keys that collide with `model`, `stream`, `temperature`, `max_tokens`, or
+`messages` are ignored. To use OpenAI as the fallback instead:
 
 ```dotenv
-OPENAI_BASE_URL=https://provider.example.com/v1
-OPENAI_API_KEY=primary-key
-OPENAI_MODEL=fast-model
-
 FALLBACK_BASE_URL=https://api.openai.com/v1
 FALLBACK_API_KEY=sk-fallback-key
 FALLBACK_MODEL=gpt-4.1-mini
+FALLBACK_EXTRA_BODY=
 ```
 
 Provider fallback improves availability but does not make the app independent
@@ -241,6 +300,15 @@ call the `/v1/auth/grant` endpoint.
 | `LIVE_DRAFTS` | `true` | Translate interim speech instead of waiting only for final phrases. |
 | `DRAFT_INTERVAL_MS` | `350` | Minimum interval between draft translation attempts for a room. |
 | `DRAFTS_PER_SECOND` | `15` | Global draft request budget shared across all rooms. |
+| `MIN_FINAL_DISPLAY_MS` | `1500` | Minimum milliseconds a finished sentence stays on the overlay's top line before the next one replaces it. 0 to 5000; 0 turns it off. |
+
+When a slow sentence finishes together with a quicker one spoken after it,
+both are shown in spoken order, and the second waits until the first has been
+on the top line for `MIN_FINAL_DISPLAY_MS`. Without the wait the first would be
+replaced within a millisecond and nobody could read it. The words being spoken
+now, on the bottom line, are never held back. When more than two finished
+sentences are waiting at once, the older ones skip the wait, so the top line
+falls at most about 3 seconds behind.
 
 Drafts make the screen feel responsive but create substantially more provider
 requests. If the provider returns HTTP 429 responses:

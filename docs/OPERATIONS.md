@@ -418,6 +418,32 @@ These are design observations, not current provider benchmarks. Models,
 regions, service tiers, quotas, and routing change. Measure from your own venue
 and account shortly before the event.
 
+### Measuring first-token latency
+
+The fallback is also asked when the primary has sent no text after
+`FALLBACK_START_MS` (default 500 ms), and the primary is cancelled when it has
+sent none after `PRIMARY_CUTOFF_MS` (default 1500 ms). These defaults are João's
+chosen values, not measured ones. Two ways to measure the primary's real median
+and p90 time to first word:
+
+```bash
+# Live: N sample captions (default 20) against the configured primary, using .env.
+# It spends provider quota, so run it outside live sessions.
+docker compose exec app node dist/measure-first-token.js 30
+
+# From production logs: every translation logs its primary's time to first word.
+docker compose logs --no-color app | docker compose exec -T app node dist/measure-first-token.js --from-logs
+```
+
+Both print `n`, `median`, `p90`, and how many requests were cut off. The log
+lines look like `first token room-1 draft primary gpt-oss-120b 231 ms` or
+`... >1500 ms (cut off)`; cut-off requests count as slower than any measured one.
+The role is `primary`, or `final` for a `FINAL_*` provider, and `--from-logs`
+reports each role and model separately. Percentiles interpolate between the two
+nearest samples, so the median of an even number of samples is the mean of the
+middle two.
+Set `FALLBACK_START_MS` to the measured median, then redeploy.
+
 ## Incident response
 
 ### Captions stop in one room
@@ -442,11 +468,15 @@ and account shortly before the event.
 ### Translation becomes slow
 
 1. Compare WebSocket RTT and end-to-final latency with the latency script.
-2. Look for timeout, circuit-breaker, fallback, and rate-limit log entries.
-3. Lower `DRAFTS_PER_SECOND`.
-4. Increase `DRAFT_INTERVAL_MS`.
-5. Temporarily set `LIVE_DRAFTS=false` if final captions remain healthy.
-6. Switch provider settings only after a short real-transcript test.
+2. Look for timeout, `no first token`, `degraded` (circuit breaker), fallback,
+   and rate-limit log entries.
+3. If `no first token` appears on healthy traffic, measure the primary's
+   median (see "Measuring first-token latency") and raise `FALLBACK_START_MS`
+   or `PRIMARY_CUTOFF_MS`.
+4. Lower `DRAFTS_PER_SECOND`.
+5. Increase `DRAFT_INTERVAL_MS`.
+6. Temporarily set `LIVE_DRAFTS=false` if final captions remain healthy.
+7. Switch provider settings only after a short real-transcript test.
 
 ### Suspected room URL exposure
 

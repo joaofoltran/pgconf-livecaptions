@@ -11,7 +11,7 @@ import {
   requireAdmin,
   requireSameOrigin,
 } from "./auth.js";
-import { loadConfig, timingSafeEqual, type Direction } from "./config.js";
+import { DRAFT_TIMEOUT_MS, FALLBACK_TIMEOUT_MS, loadConfig, timingSafeEqual, type Direction } from "./config.js";
 import { deepgramListenUrl, grantDeepgramToken } from "./deepgram.js";
 import {
   broadcastOverlays,
@@ -23,39 +23,86 @@ import {
   type CaptionLine,
   type Room,
 } from "./rooms.js";
-import { isRateLimited, translateCaption } from "./translate.js";
+import { CircuitBreaker } from "./breaker.js";
+import {
+  isRateLimited,
+  primaryProvider,
+  translateWithHedge,
+  type HedgeOptions,
+  type Provider,
+  type TranslateOptions,
+} from "./translate.js";
 
 // A provider that stalls without an error freezes the display: in-flight drafts
 // occupy the queue and the final waits indefinitely. Short timeouts restore control.
-const DRAFT_TIMEOUT_MS = 3000;
 const FINAL_TIMEOUT_MS = 3500;
-const FALLBACK_TIMEOUT_MS = 6000;
+const FINAL_RETRY_FIRST_TOKEN_MS = 1500;
 const SLOW_WARN_MS = 1500;
+// More finished sentences than this waiting to be shown skip the minimum display
+// time, so the overlay's top line falls at most a few seconds behind.
+const MAX_FINALS_HELD = 2;
 
-// Circuit breaker: Cerebras can degrade in bursts (dozens of timeouts in seconds).
-// After several consecutive failures, route drafts and finals to the fallback
-// temporarily before trying the primary provider again.
-const BREAKER_FAILURES = 4;
-const BREAKER_WINDOW_MS = 15000;
-const BREAKER_OPEN_MS = 45000;
-const breaker = { failures: [] as number[], openUntil: 0 };
+// Circuit breaker per preferred provider: Cerebras can degrade in bursts (dozens
+// of timeouts in seconds). BREAKER_* failures in a window route its traffic to the
+// fallback for a while, then a single probe decides whether to return.
+const breakers = new Map<string, CircuitBreaker>();
 
-function primaryDegraded(): boolean {
-  return Boolean(config.fallback) && Date.now() < breaker.openUntil;
+function breakerFor(provider: Provider): CircuitBreaker {
+  const key = `${provider.baseUrl} ${provider.model}`;
+  let breaker = breakers.get(key);
+  if (!breaker) {
+    breaker = new CircuitBreaker(config.breakerFailureThreshold, config.breakerWindowMs, config.breakerOpenMs);
+    breakers.set(key, breaker);
+  }
+  return breaker;
 }
 
-function notePrimaryFailure(why: string): void {
-  if (!config.fallback) return;
-  const now = Date.now();
-  breaker.failures = breaker.failures.filter((t) => now - t < BREAKER_WINDOW_MS);
-  breaker.failures.push(now);
-  if (breaker.failures.length >= BREAKER_FAILURES && now >= breaker.openUntil) {
-    breaker.openUntil = now + BREAKER_OPEN_MS;
-    breaker.failures = [];
-    console.warn(
-      `provedor principal degradado (${why}); drafts e finais no fallback ${config.fallback.model} por ${BREAKER_OPEN_MS / 1000} s`
-    );
+function hedgedTranslate(
+  room: Room,
+  kind: "draft" | "final",
+  preferred: Provider,
+  timeoutMs: number,
+  text: string,
+  direction: Direction,
+  options: TranslateOptions & Pick<HedgeOptions, "onFallbackDone">
+): Promise<string> {
+  const fallback = config.fallback;
+  const breaker = fallback ? breakerFor(preferred) : null;
+  const route = breaker?.route() ?? "preferred";
+  // A FINAL_* provider is chosen for quality, not speed: give it its whole timeout.
+  const quality = preferred === config.finalProvider;
+  const cutoffMs = quality ? timeoutMs : config.primaryCutoffMs;
+  const promise = translateWithHedge(config, text, direction, {
+    ...options,
+    provider: preferred,
+    fallback,
+    fallbackAfterMs: quality ? timeoutMs : config.fallbackStartMs,
+    cutoffMs,
+    timeoutMs,
+    fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
+    skipPreferred: route === "fallback",
+    onPreferredFailure: (why, err) => {
+      const detail = err instanceof Error ? ` (${err.message.slice(0, 120)})` : "";
+      console.warn(
+        `${kind} ${room.id}: ${preferred.model} ${why}${detail}${fallback ? `; using ${fallback.model}` : ""}`
+      );
+      // Drafts run several per second, so their 429s alone would trip a healthy provider.
+      if (kind === "draft" && isRateLimited(err)) return;
+      if (breaker?.fail()) {
+        console.warn(
+          `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${config.breakerOpenMs / 1000} s`
+        );
+      }
+    },
+    onPreferredSuccess: () => breaker?.succeed(),
+    // Read by `measure-first-token --from-logs` to compute the median and p90.
+    onPreferredFirstToken: (ms) =>
+      console.log(`first token ${room.id} ${kind} ${quality ? "final" : "primary"} ${preferred.model} ${ms === null ? `>${cutoffMs} ms (cut off)` : `${ms} ms`}`),
+  });
+  if (route === "probe") {
+    void promise.catch(() => {}).finally(() => breaker?.release());
   }
+  return promise;
 }
 
 // Keep TLS connections to OpenAI/Deepgram alive between sentences: the default
@@ -241,6 +288,10 @@ adminApi.post("/reset/:room", requireSameOrigin, (req, res) => {
   }
   room.transcript = [];
   room.lastCaption = null;
+  room.lastFinalAt = 0;
+  room.epoch++;
+  // Finals from before the reset are dropped, so the new session's need not wait for them.
+  room.finalShown = Promise.resolve();
   room.pending = "";
   room.lastSource = null;
   room.lastTranslation = null;
@@ -272,6 +323,10 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", (ws, req) => {
+  ws.on("error", (err) => {
+    console.error("ws error", room?.id, err);
+  });
+
   const url = new URL(req.url ?? "", "http://localhost");
   const room = getRoom(url.searchParams.get("room") ?? undefined);
   const token = url.searchParams.get("k") ?? "";
@@ -324,15 +379,12 @@ wss.on("connection", (ws, req) => {
         room.capture = null;
         room.captureOnline = false;
         room.sttActive = false;
+        room.epoch++;
         closeDeepgram(room);
         broadcastOverlays(room, statusPayload(room));
       }
     });
   }
-
-  ws.on("error", (err) => {
-    console.error("ws error", room.id, err);
-  });
 });
 
 function parseDirection(value: unknown): Direction {
@@ -590,8 +642,9 @@ function fireDraft(room: Room): void {
   }
   // Canceling the previous draft would leave the display empty: each takes ~1 s
   // while interims arrive faster. Run them in parallel and discard late sequences.
+  // With every slot busy, the newest candidate fires when a draft settles.
   if (room.draftsInFlight.size >= MAX_DRAFTS_IN_FLIGHT) {
-    scheduleDraft(room, config.draftIntervalMs);
+    evictStalledDraft(room, now);
     return;
   }
 
@@ -600,78 +653,109 @@ function fireDraft(room: Room): void {
   room.draftSource = candidate;
 
   const abort = new AbortController();
-  let timedOut = false;
-  const degraded = primaryDegraded();
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    abort.abort();
-  }, degraded ? FALLBACK_TIMEOUT_MS : DRAFT_TIMEOUT_MS);
-
   const seq = ++room.seq;
+  const sentence = room.sentence;
   const direction = room.direction;
   const context = translationContext(room);
   const startedAt = now;
   const prefix = room.lockedPrefix;
+  const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false, startedAt, awaited: false };
 
-  const promise = translateCaption(config, candidate, direction, {
+  const render = (translated: string): boolean => {
+    if (sentence !== room.sentence || seq <= room.lastDraftSeq) return false;
+
+    const previous = room.lastDraft?.translated ?? null;
+    // Flush took ownership of the sentence after this draft started: do not render it.
+    if (prefix !== room.lockedPrefix && !startsWithWords(translated, room.lockedPrefix)) return false;
+    if (prefix && !startsWithWords(translated, prefix)) {
+      console.warn(`draft ignorou o prefixo travado ${room.id}`);
+    }
+    // A shrinking draft removes words from the display; another arrives momentarily.
+    if (previous && words(translated).length < words(previous).length - 1) return false;
+
+    room.lastDraftSeq = seq;
+    room.lastDraft = { source: candidate, translated };
+    advanceLock(room, previous, translated);
+    emitCaption(room, seq, {
+      type: "caption",
+      seq,
+      original: candidate,
+      translated,
+      direction,
+      final: false,
+    });
+    return true;
+  };
+  // The fallback's draft shows while the primary may still start before its cutoff.
+  // If it does, its draft replaces the fallback's as if that one never showed.
+  let fallbackShown: { text: string; lastDraft: Room["lastDraft"]; lastDraftSeq: number; lockedPrefix: string } | null =
+    null;
+
+  const promise = hedgedTranslate(room, "draft", primaryProvider(config), DRAFT_TIMEOUT_MS, candidate, direction, {
     context,
     unfinished: true,
     signal: abort.signal,
     prefix,
-    provider: degraded ? config.fallback ?? undefined : undefined,
+    onPartial: () => {
+      inFlight.gotToken = true;
+    },
+    onFallbackDone: (text) => {
+      const before = { lastDraft: room.lastDraft, lastDraftSeq: room.lastDraftSeq, lockedPrefix: room.lockedPrefix };
+      const translated = capitalizeFirst(text);
+      if (render(translated)) fallbackShown = { text: translated, ...before };
+    },
   }).then(capitalizeFirst);
+  inFlight.promise = promise;
   // Flush checks this map: if the final matches an in-flight draft, wait for it
-  // instead of paying for another OpenAI round trip.
-  room.draftsInFlight.set(abort, { source: candidate, promise });
+  // instead of paying for another translation round trip.
+  room.draftsInFlight.set(abort, inFlight);
 
   promise
     .then((translated) => {
       const took = Date.now() - startedAt;
       if (took > SLOW_WARN_MS) console.warn(`draft lento ${room.id}: ${took} ms`);
-      if (seq <= room.lastDraftSeq) return;
-
-      const previous = room.lastDraft?.translated ?? null;
-      // Flush took ownership of the sentence after this draft started: do not render it.
-      if (prefix !== room.lockedPrefix && !startsWithWords(translated, room.lockedPrefix)) return;
-      if (prefix && !startsWithWords(translated, prefix)) {
-        console.warn(`draft ignorou o prefixo travado ${room.id}`);
+      if (fallbackShown) {
+        if (translated === fallbackShown.text) return;
+        if (sentence === room.sentence && room.lastDraftSeq === seq) {
+          room.lastDraft = fallbackShown.lastDraft;
+          room.lastDraftSeq = fallbackShown.lastDraftSeq;
+          room.lockedPrefix = fallbackShown.lockedPrefix;
+        }
       }
-      // A shrinking draft removes words from the display; another arrives momentarily.
-      if (previous && words(translated).length < words(previous).length - 1) return;
-
-      room.lastDraftSeq = seq;
-      room.lastDraft = { source: candidate, translated };
-      advanceLock(room, previous, translated);
-      emitCaption(room, seq, {
-        type: "caption",
-        seq,
-        original: candidate,
-        translated,
-        direction,
-        final: false,
-      });
+      render(translated);
     })
     .catch((err) => {
-      if (abort.signal.aborted) {
-        if (timedOut) {
-          console.warn(`draft timeout ${room.id} (descartado)`);
-          if (!degraded) notePrimaryFailure("draft timeout");
-        }
+      if (abort.signal.aborted) return;
+      if (isRateLimited(err)) {
+        console.warn("draft rate limited");
         return;
       }
-      // A lost draft pauses nothing; another arrives momentarily.
-      if (isRateLimited(err)) {
-        console.warn("draft rate limited (descartado)");
+      if (isAbortError(err)) {
+        console.warn(`draft timeout ${room.id}`);
         return;
       }
       console.error("draft failed", err);
-      if (!degraded) notePrimaryFailure("draft error");
     })
     .finally(() => {
-      clearTimeout(timeout);
       room.draftsInFlight.delete(abort);
+      fireDraft(room);
     });
 }
+
+// A draft with no token after DRAFT_TIMEOUT_MS is stuck on both providers;
+// younger ones may still be waiting for their hedge. Its slot frees only when
+// its aborted streams have closed, so one eviction at a time.
+function evictStalledDraft(room: Room, now: number): void {
+  let oldest: [AbortController, number] | null = null;
+  for (const [abort, draft] of room.draftsInFlight) {
+    if (abort.signal.aborted) return;
+    if (draft.gotToken || now - draft.startedAt < DRAFT_TIMEOUT_MS) continue;
+    if (!oldest || draft.startedAt < oldest[1]) oldest = [abort, draft.startedAt];
+  }
+  oldest?.[0].abort();
+}
+
+const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
 
 function abortDrafts(room: Room): void {
   for (const abort of room.draftsInFlight.keys()) {
@@ -738,15 +822,9 @@ function advanceLock(room: Room, previous: string | null, shown: string): void {
   if (startsWithWords(candidate, room.lockedPrefix)) room.lockedPrefix = candidate;
 }
 
-function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), ms);
-  return run(abort.signal).finally(() => clearTimeout(timer));
-}
-
 // The final must not remain stuck on a stalled provider or fall back to source
-// text after a transient 429. Try the primary with a timeout, then another
-// provider as fallback; without one, retry the primary before giving up.
+// text after a transient 429. Hedge the preferred provider against fallback;
+// without a fallback, retry the preferred provider after a 429 before giving up.
 async function translateFinal(
   room: Room,
   original: string,
@@ -759,29 +837,40 @@ async function translateFinal(
   const startedAt = Date.now();
   // In hybrid mode, finals use another, slower but higher-quality provider.
   // Its timeout is looser because it delays only consolidation, not the live line.
-  const degraded = primaryDegraded();
-  const provider = degraded ? config.fallback ?? undefined : config.finalProvider ?? undefined;
-  const timeoutMs = provider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
+  const preferred = config.finalProvider ?? primaryProvider(config);
+  const timeoutMs = config.finalProvider ? FALLBACK_TIMEOUT_MS : FINAL_TIMEOUT_MS;
   const base = { context, onPartial, prefix, unfinished };
+  const run = () => hedgedTranslate(room, "final", preferred, timeoutMs, original, direction, base);
   try {
-    const out = await withTimeout(timeoutMs, (signal) =>
-      translateCaption(config, original, direction, { ...base, signal, provider })
-    );
+    const out = await run();
     const took = Date.now() - startedAt;
     if (took > SLOW_WARN_MS) console.warn(`final lento ${room.id}: ${took} ms`);
     return out;
   } catch (err) {
-    const why = err instanceof Error && err.name === "AbortError" ? `timeout ${timeoutMs} ms` : String(err);
-    if (!degraded) notePrimaryFailure(`final ${why}`);
     if (config.fallback) {
-      console.warn(`final no principal falhou (${why}); usando fallback ${config.fallback.model}`, room.id);
-      return withTimeout(FALLBACK_TIMEOUT_MS, (signal) =>
-        translateCaption(config, original, direction, {
+      // One more fallback try rides out a single fallback error, which would
+      // otherwise put source text on screen. In a full outage it must not hold
+      // the source text back, so it gets FINAL_RETRY_FIRST_TOKEN_MS to start streaming.
+      console.warn(`final retry ${room.id}: fallback ${config.fallback.model}`);
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), FINAL_RETRY_FIRST_TOKEN_MS);
+      try {
+        return await translateWithHedge(config, original, direction, {
           ...base,
-          signal,
-          provider: config.fallback ?? undefined,
-        })
-      );
+          signal: abort.signal,
+          onPartial: (partial) => {
+            clearTimeout(timer);
+            onPartial?.(partial);
+          },
+          fallback: config.fallback,
+          fallbackAfterMs: 0,
+          cutoffMs: 0,
+          timeoutMs: FALLBACK_TIMEOUT_MS,
+          skipPreferred: true,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     }
     if (!isRateLimited(err)) throw err;
   }
@@ -790,9 +879,7 @@ async function translateFinal(
   for (const delay of [350, 900]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
     try {
-      return await withTimeout(timeoutMs, (signal) =>
-        translateCaption(config, original, direction, { ...base, signal, provider })
-      );
+      return await run();
     } catch (err) {
       lastErr = err;
       if (!isRateLimited(err)) throw err;
@@ -824,85 +911,141 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
   const direction = room.direction;
   const seq = ++room.seq;
-  const context = translationContext(room);
+  // Taken before any await: a reset or disconnect during translation makes this final stale.
+  const epoch = room.epoch;
+  const transcript = room.transcript;
+  const previousFinal = room.finalShown;
+  let finalShown!: () => void;
+  room.finalShown = new Promise((resolve) => (finalShown = resolve));
+  try {
+    // Drafts started before this final belong to the closed sentence: none may
+    // render or become lastDraft, or the next sentence's draft hits the shrink guard.
+    room.sentence++;
+    const context = translationContext(room);
 
-  // With drafts enabled, token streaming would only add jitter: every displayed
-  // version is already a complete sentence.
-  const onPartial = config.liveDrafts
-    ? undefined
-    : (partial: string) => {
-        emitCaption(room, seq, {
-          type: "caption",
-          seq,
-          original,
-          translated: partial,
-          direction,
-          final: false,
-        });
-      };
+    // Stream the final word by word onto an empty live line. Over a visible draft,
+    // the final replaces it in one step: its first partials would erase the draft.
+    const onPartial = (partial: string) => {
+      if (room.epoch !== epoch) return;
+      if (room.renderedSeq !== seq && room.renderedSeq > room.renderedFinalSeq) return;
+      emitCaption(room, seq, {
+        type: "caption",
+        seq,
+        original,
+        translated: partial,
+        direction,
+        final: false,
+      });
+    };
 
-  // Fast path: if the latest draft already translated this exact sentence, avoid
-  // another OpenAI round trip; emit the final immediately without rewriting the display.
-  // In hybrid mode, the final exists specifically for the better provider to redo it.
-  const wanted = normalizeText(original);
-  let reusable =
-    !config.finalProvider && room.lastDraft && normalizeText(room.lastDraft.source) === wanted
-      ? room.lastDraft.translated
-      : null;
-  room.lastDraft = null;
+    // Fast path: if the latest draft already translated this exact sentence, avoid
+    // another OpenAI round trip; emit the final immediately without rewriting the display.
+    // In hybrid mode, the final exists specifically for the better provider to redo it.
+    const wanted = normalizeText(original);
+    let reusable =
+      !config.finalProvider && room.lastDraft && normalizeText(room.lastDraft.source) === wanted
+        ? room.lastDraft.translated
+        : null;
+    room.lastDraft = null;
 
-  // Deepgram's latest interim is usually identical to the final, and its draft
-  // is still in flight when flush arrives. Waiting is faster than starting
-  // another translation.
-  if (!reusable && !config.finalProvider) {
-    for (const draft of room.draftsInFlight.values()) {
-      if (normalizeText(draft.source) === wanted) {
-        try {
-          // Do not wait for this draft if it is stalled at the provider.
-          reusable = await Promise.race([
-            draft.promise,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
-          ]);
-        } catch {
-          reusable = null;
-        }
-        break;
+    // Deepgram's latest interim is usually identical to the final, and its draft
+    // is still in flight when flush arrives. Waiting is faster than starting
+    // another translation.
+    const matching =
+      !reusable && !config.finalProvider
+        ? [...room.draftsInFlight].find(([, draft]) => normalizeText(draft.source) === wanted)
+        : undefined;
+    // Retired drafts can no longer render; free their streams for the next sentence.
+    // Each draft's own finally releases its slot. A draft an earlier flush awaits
+    // is that sentence's final: aborting it would re-translate it behind this one.
+    for (const [abort, draft] of room.draftsInFlight) {
+      if (abort !== matching?.[0] && !draft.awaited) abort.abort();
+    }
+    if (matching) {
+      const [abort, draft] = matching;
+      draft.awaited = true;
+      const budget = config.primaryCutoffMs + 1500;
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        // Do not wait for this draft if it is stalled at the provider. One that is
+        // already streaming is nearly done, so give it up to twice the budget.
+        reusable = await Promise.race([
+          draft.promise,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => {
+              if (!draft.gotToken) return resolve(null);
+              timer = setTimeout(() => resolve(null), budget);
+            }, budget);
+          }),
+        ]);
+      } catch {
+        reusable = null;
+      }
+      clearTimeout(timer);
+      if (!reusable) abort.abort();
+    }
+
+    let translated = original;
+    let isTranslated = false;
+    if (reusable) {
+      translated = closePunctuation(reusable, original);
+      isTranslated = true;
+    } else {
+      try {
+        translated = capitalizeFirst(
+          await translateFinal(room, original, direction, context, onPartial, prefix, !complete)
+        );
+        isTranslated = true;
+      } catch (err) {
+        // Only here does the display show source-language text as a last resort.
+        if (isAbortError(err)) console.error(`translate failed ${room.id}: timeout`);
+        else console.error("translate failed", err);
+        if (ws) sendJson(ws, { type: "translate_error" });
       }
     }
-  }
 
-  let translated = original;
-  if (reusable) {
-    translated = closePunctuation(reusable, original);
-    room.lastSource = original;
-    room.lastTranslation = translated;
-  } else {
+    // Finals go out in sentence order: one that finished early waits for the
+    // sentences before it, so a late final is shown instead of being dropped.
+    room.finalsWaiting++;
     try {
-      translated = capitalizeFirst(
-        await translateFinal(room, original, direction, context, onPartial, prefix, !complete)
-      );
-      room.lastSource = original;
-      room.lastTranslation = translated;
-    } catch (err) {
-      // Only here does the display show source-language text as a last resort.
-      console.error("translate failed", err);
-      if (ws) sendJson(ws, { type: "translate_error" });
+      await previousFinal;
+      // /reset replaced the transcript and cleared the context: this sentence belongs to the old session.
+      if (room.transcript !== transcript) return;
+      // Set after the wait, so the next sentence's context is the last one spoken, not the last to finish.
+      if (isTranslated) {
+        room.lastSource = original;
+        room.lastTranslation = translated;
+      }
+      const holdMs = room.lastFinalAt + config.minFinalDisplayMs - Date.now();
+      // A final that won't be shown must not hold up the ones after it.
+      if (room.epoch === epoch && holdMs > 0 && room.finalsWaiting <= MAX_FINALS_HELD) {
+        await new Promise((resolve) => setTimeout(resolve, holdMs));
+      }
+    } finally {
+      room.finalsWaiting--;
     }
+    // /reset replaces the transcript, so a sentence spoken before it is dropped. A capture
+    // disconnect (maybe a blip) keeps the sentence in the transcript but off the overlay.
+    if (room.transcript !== transcript) return;
+    const show = room.epoch === epoch;
+    const line: CaptionLine = {
+      ts: Date.now(),
+      original,
+      translated,
+      direction,
+      final: true,
+    };
+    room.transcript.push(line);
+    if (room.transcript.length > 2000) {
+      room.transcript.splice(0, room.transcript.length - 2000);
+    }
+    if (!show) return;
+    room.lastFinalAt = Date.now();
+    room.lastCaption = line;
+    emitCaption(room, seq, { type: "caption", seq, ...line });
+  } finally {
+    finalShown();
   }
-
-  const line: CaptionLine = {
-    ts: Date.now(),
-    original,
-    translated,
-    direction,
-    final: true,
-  };
-  room.lastCaption = line;
-  room.transcript.push(line);
-  if (room.transcript.length > 2000) {
-    room.transcript.splice(0, room.transcript.length - 2000);
-  }
-  emitCaption(room, seq, { type: "caption", seq, ...line });
 }
 
 setInterval(() => {

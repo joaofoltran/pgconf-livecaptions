@@ -29,13 +29,14 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* At most two lines on screen, in any combination. */
-#committed,
+/* At most two lines on screen, in any combination. The finished sentence on top
+   is smaller than the words being spoken below: about 46 px over 56 px at 1920 wide. */
+#committed {
+  font-size: 2.4vw;
+  -webkit-line-clamp: 2;
+}
 #live {
   font-size: 2.9vw;
-}
-#committed {
-  -webkit-line-clamp: 2;
 }
 /* Anchor the live line at the END: when the sentence exceeds the available space,
    the beginning scrolls off the top while new words remain visible; otherwise

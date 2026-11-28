@@ -48,8 +48,9 @@ function requiredEnv(name: string, minLength = 1): string {
   return value;
 }
 
+// An empty value ("NAME=" in .env) means unset; Number("") would read it as 0.
 function integerEnv(name: string, fallback: string, min: number, max: number): number {
-  const raw = env(name, fallback);
+  const raw = env(name) || fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
     throw new Error(`${name} must be an integer between ${min} and ${max}`);
@@ -63,6 +64,45 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
     throw new Error(`${name} must be true or false`);
   }
   return value === "true";
+}
+
+// A draft request with no answer by then is aborted as stuck.
+export const DRAFT_TIMEOUT_MS = 3000;
+// The longest a single provider attempt can run: a FINAL_* provider's final, or a fallback.
+export const FALLBACK_TIMEOUT_MS = 6000;
+
+// With a fallback: it starts if the primary has sent no text by FALLBACK_START_MS,
+// and the primary is cancelled if it has sent none by PRIMARY_CUTOFF_MS.
+// The defaults are chosen, not measured: see docs/OPERATIONS.md.
+function primaryTiming() {
+  for (const old of ["FIRST_TOKEN_MS", "PRIMARY_MEDIAN_FIRST_TOKEN_MS", "PRIMARY_CUTOFF_MULTIPLIER"]) {
+    if (process.env[old] !== undefined) {
+      throw new Error(`${old} was replaced by FALLBACK_START_MS and PRIMARY_CUTOFF_MS; remove it`);
+    }
+  }
+  const fallbackStartMs = integerEnv("FALLBACK_START_MS", "500", 50, 3000);
+  // At or past the draft timeout, the timeout would end drafts before the cutoff could.
+  const primaryCutoffMs = integerEnv("PRIMARY_CUTOFF_MS", "1500", 50, DRAFT_TIMEOUT_MS - 1);
+  if (primaryCutoffMs <= fallbackStartMs) {
+    throw new Error("PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS");
+  }
+  return { fallbackStartMs, primaryCutoffMs };
+}
+
+// No defaults: a key for one provider must never be sent to another provider's URL.
+function fallbackProvider() {
+  const apiKey = env("FALLBACK_API_KEY");
+  if (!apiKey) return null;
+  const missing = ["FALLBACK_BASE_URL", "FALLBACK_MODEL"].filter((name) => !env(name));
+  if (missing.length) {
+    throw new Error(`FALLBACK_API_KEY is set but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not set`);
+  }
+  return {
+    baseUrl: baseUrlEnv("FALLBACK_BASE_URL", ""),
+    apiKey,
+    model: env("FALLBACK_MODEL"),
+    extraBody: parseJsonObject("FALLBACK_EXTRA_BODY", env("FALLBACK_EXTRA_BODY")),
+  };
 }
 
 function baseUrlEnv(name: string, fallback: string): string {
@@ -194,7 +234,7 @@ export function loadConfig() {
     openaiModel: env("OPENAI_MODEL") || "gpt-4.1-mini",
     // Any compatible API (Groq, Cerebras, ...): change the base URL and model.
     openaiBaseUrl: baseUrlEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    // JSON merged into each request body for provider-specific parameters
+    // JSON fields added to each request body (colliding keys are ignored) for provider-specific parameters
     // (for example, {"reasoning_effort":"low"} for Groq gpt-oss models).
     openaiExtraBody: parseJsonObject("OPENAI_EXTRA_BODY", env("OPENAI_EXTRA_BODY")),
     // Hybrid mode: drafts use the fast primary provider while final captions use
@@ -208,16 +248,9 @@ export function loadConfig() {
           serviceTier: env("FINAL_SERVICE_TIER") || undefined,
         }
       : null,
-    // Secondary provider for final captions when the primary stalls or fails.
+    // Secondary provider hedged against the primary when it stalls or fails.
     // Enabled only when FALLBACK_API_KEY is set.
-    fallback: env("FALLBACK_API_KEY")
-      ? {
-          baseUrl: baseUrlEnv("FALLBACK_BASE_URL", "https://api.openai.com/v1"),
-          apiKey: env("FALLBACK_API_KEY"),
-          model: env("FALLBACK_MODEL") || "gpt-4.1-mini",
-          extraBody: parseJsonObject("FALLBACK_EXTRA_BODY", env("FALLBACK_EXTRA_BODY")),
-        }
-      : null,
+    fallback: fallbackProvider(),
     openaiServiceTier: env("OPENAI_SERVICE_TIER"),
     dgEndpointing: String(integerEnv("DG_ENDPOINTING", "300", 50, 5000)),
     // "multi" = multilingual Nova-3: accepts PT keyterms and handles Portuguese
@@ -227,7 +260,17 @@ export function loadConfig() {
     // the VPS is close to Deepgram/OpenAI). false = the browser connects directly.
     sttProxy: booleanEnv("STT_PROXY", "true"),
     liveDrafts: booleanEnv("LIVE_DRAFTS", "true"),
+    ...primaryTiming(),
+    // Circuit breaker: this many primary failures within the window send every
+    // caption to the fallback for the open time, then one request retries the primary.
+    breakerFailureThreshold: integerEnv("BREAKER_FAILURE_THRESHOLD", "4", 1, 100),
+    breakerWindowMs: integerEnv("BREAKER_WINDOW_MS", "10000", 1000, 600_000),
+    // Longer than any attempt, so a request started before the breaker opened, or a
+    // finished probe's fallback, settles before the next probe and can't steer it.
+    breakerOpenMs: integerEnv("BREAKER_OPEN_MS", "20000", FALLBACK_TIMEOUT_MS + 1000, 600_000),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
+    // Each finished sentence stays on the overlay's top line at least this long.
+    minFinalDisplayMs: integerEnv("MIN_FINAL_DISPLAY_MS", "1500", 0, 5000),
     // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),
     rooms,
