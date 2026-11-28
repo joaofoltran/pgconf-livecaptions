@@ -15,9 +15,11 @@ const managedVariables = [
   "OPENAI_BASE_URL",
   "OPENAI_EXTRA_BODY",
   "PORT",
+  "ROOM_SAMPLE_MAX_LINES",
   "ROOMS",
   "SESSION_SECRET",
   "STT_PROXY",
+  "TERM_STATS_ROOMS",
   "TOKEN_ROOM_1",
 ];
 
@@ -57,6 +59,15 @@ test("loadConfig accepts a valid minimal environment", () => {
   assert.equal(config.port, 3000);
   assert.equal(config.sttProxy, true);
   assert.equal(config.liveDrafts, true);
+  assert.deepEqual(config.termStatsRooms, []);
+});
+
+test("loadConfig rejects term-stats rooms that are not configured", () => {
+  process.env.TERM_STATS_ROOMS = "room-1, room-9";
+  assert.throws(() => loadConfig(), /TERM_STATS_ROOMS lists "room-9"/);
+
+  process.env.TERM_STATS_ROOMS = "room-1";
+  assert.deepEqual(loadConfig().termStatsRooms, ["room-1"]);
 });
 
 test("loadConfig rejects duplicate and malformed room slugs", () => {

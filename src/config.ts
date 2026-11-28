@@ -39,6 +39,20 @@ export function tokenEnvName(room: string): string {
   return `TOKEN_${room.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
 }
 
+// A slug missing from ROOMS is a typo that would silently collect nothing.
+function termStatsRoomsEnv(rooms: string[]): string[] {
+  const out = env("TERM_STATS_ROOMS")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const room of out) {
+    if (!rooms.includes(room)) {
+      throw new Error(`TERM_STATS_ROOMS lists "${room}", which is not in ROOMS`);
+    }
+  }
+  return out;
+}
+
 function requiredEnv(name: string, minLength = 1): string {
   const value = env(name);
   if (!value) throw new Error(`Missing ${name} in environment`);
@@ -232,6 +246,10 @@ export function loadConfig() {
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),
     rooms,
     tokens,
+    // Opt-in per room: term counts and a short sample of source speech are
+    // persisted only for these rooms. See docs/TERM_STATS.md.
+    termStatsRooms: termStatsRoomsEnv(rooms),
+    roomSampleMaxLines: integerEnv("ROOM_SAMPLE_MAX_LINES", "50", 0, 1000),
     keyterms: loadKeyterms(),
     aliases: loadAliases(),
     glossary: loadGlossary(),
