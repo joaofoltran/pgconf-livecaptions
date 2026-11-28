@@ -39,8 +39,8 @@ anything else a speaker says aloud.
 - A line longer than 1,000 characters is cut to 1,000 before it is counted or
   kept in the sample.
 - Each room keeps at most 20,000 distinct terms. When it goes over, the terms
-  with the lowest counts are dropped until 18,000 remain, so a brand-new term
-  in a full room is usually dropped again soon.
+  with the lowest counts are dropped until 18,000 remain. Among equal counts
+  the oldest go first, so a brand-new term usually survives the trim.
 - When a file is loaded with more terms or sample lines than the current
   limits allow (for example after `ROOM_SAMPLE_MAX_LINES` was lowered), it is
   trimmed to the limits and rewritten. The sample keeps its first lines. Terms

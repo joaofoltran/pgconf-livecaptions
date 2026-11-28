@@ -258,7 +258,8 @@ export class TermStats {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const body = { terms: Object.fromEntries(stats.terms), sample: stats.sample };
       // flush: fsync before the rename, so a crash cannot leave a renamed
-      // but empty or cut-off file.
+      // but empty or cut-off file. Pass no encoding: with encoding "utf8",
+      // Node 22 takes a fast path that skips the fsync without an error.
       fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600, flush: true });
       fs.renameSync(tmp, file);
       this.syncDir();
@@ -288,6 +289,7 @@ export class TermStats {
   private remove(file: string): void {
     try {
       fs.rmSync(file, { force: true });
+      this.syncDir();
     } catch (err) {
       console.error(`term stats cannot remove ${file}`, err);
     }
@@ -318,9 +320,9 @@ export class TermStats {
     this.batchTimer.unref();
   }
 
-  // Drops the lowest counts (oldest first among ties) to 90% of the cap, so
-  // the sort runs once per batch of new terms rather than on every caption.
-  // At the cap, a brand-new term is usually the one dropped.
+  // Drops the lowest counts to 90% of the cap, so the sort runs once per
+  // batch of new terms rather than on every caption. Among equal counts the
+  // oldest go first, so a brand-new term usually survives the trim.
   private enforceCap(terms: Map<string, number>): boolean {
     if (terms.size <= this.maxTerms) return false;
     const keep = Math.floor(this.maxTerms * 0.9);
