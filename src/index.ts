@@ -350,6 +350,8 @@ wss.on("connection", (ws, req) => {
     });
   } else {
     if (room.capture && room.capture !== ws) {
+      // Like a disconnect: the old capture's held finals stay in the transcript, off the overlay.
+      room.epoch++;
       try {
         room.capture.close(4409, "replaced");
       } catch {
