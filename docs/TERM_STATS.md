@@ -155,7 +155,10 @@ JSON shape:
 ```
 
 Terms are sorted by count, highest first. The text format has one
-`count<TAB>term` line per term, a blank line, then the sample lines.
+`count<TAB>term` line per term, a blank line, then the sample lines. In the
+text format, backslashes, line breaks, tabs and other control characters inside
+a line are escaped as `\\`, `\n`, `\r`, `\t` and `\uXXXX`, so each stored line is
+exactly one line of the file. The JSON export returns the stored text unchanged.
 
 ## Clear
 

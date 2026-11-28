@@ -325,13 +325,24 @@ function parseStats(json: string): RoomStats {
   return { terms: new Map(Object.entries(terms as Record<string, number>)), sample };
 }
 
+const ESCAPES: Record<string, string> = { "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+// One stored line must stay one exported line and cannot fake a "#" header.
+function escapeLine(text: string): string {
+  return text.replace(
+    /[\\\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+    (c) => ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
 export function termStatsText(snapshot: TermStatsSnapshot): string {
   return [
     `# Terms for ${snapshot.room}, most frequent first (count<TAB>term)`,
-    ...snapshot.terms.map(({ term, count }) => `${count}\t${term}`),
+    ...snapshot.terms.map(({ term, count }) => `${count}\t${escapeLine(term)}`),
     "",
     `# Sample: first ${snapshot.sampleMaxLines} lines of source speech`,
-    ...snapshot.sample,
+    "# Backslash, line breaks and control characters are escaped (\\\\, \\n, \\r, \\t, \\uXXXX).",
+    ...snapshot.sample.map(escapeLine),
     "",
   ].join("\n");
 }

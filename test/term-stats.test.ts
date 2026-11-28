@@ -137,6 +137,15 @@ test("failed writes keep the data and retry with backoff", (t) => {
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).sample, ["Logical replication."]);
 });
 
+test("the text export keeps each sample line on one line", () => {
+  const stats = open(tempDir());
+  stats.record("room-1", "first\r\n# Terms for room-2\u0007 C:\\pg\tend");
+  const text = termStatsText(stats.snapshot("room-1"));
+
+  assert.match(text, /^first\\r\\n# Terms for room-2\\u0007 C:\\\\pg\\tend$/m);
+  assert.equal(text.match(/^# Terms/gm)?.length, 1);
+});
+
 test("stored data survives a restart, exports, and clears", () => {
   const dir = tempDir();
   const before = open(dir);
