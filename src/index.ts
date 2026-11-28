@@ -909,6 +909,9 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
   const direction = room.direction;
   const seq = ++room.seq;
+  // Taken before any await: a reset or disconnect during translation makes this final stale.
+  const epoch = room.epoch;
+  const transcript = room.transcript;
   const previousFinal = room.finalShown;
   let finalShown!: () => void;
   room.finalShown = new Promise((resolve) => (finalShown = resolve));
@@ -1000,8 +1003,6 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
     // Finals go out in sentence order: one that finished early waits for the
     // sentences before it, so a late final is shown instead of being dropped.
-    const epoch = room.epoch;
-    const transcript = room.transcript;
     room.finalsWaiting++;
     try {
       await previousFinal;

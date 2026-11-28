@@ -282,6 +282,27 @@ test("a final held on screen is not shown after a reset or a capture disconnect,
   }
 });
 
+test("a final still translating when the room is reset never reaches the new session", async () => {
+  const sentence = "one two three four.";
+  await scenario(
+    // The first sentence's primary hangs; the fallback answers after the reset.
+    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 900, doneMs: 1200 }) : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false" },
+    async (app) => {
+      app.sayFinal(sentence);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      app.sayFinal("Okay.");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await app.reset();
+      app.sayFinal("five six seven.");
+      await waitFor("the first final after the reset", () => app.captions.some((c) => c.final), 3000);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), ["five six seven."]);
+      assert.deepEqual((await app.transcript()).map((l) => l.original), ["five six seven."]);
+    }
+  );
+});
+
 test("four finals released together are shown within about 3 s, so the top line never falls far behind", async () => {
   const sentence = "one two three four.";
   const remarks = ["Okay.", "Right.", "Yes."];
