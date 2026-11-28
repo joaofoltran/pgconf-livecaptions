@@ -209,12 +209,14 @@ Finals are shown in sentence order: a final that finishes before an earlier
 sentence's final waits for it, so a slow final is shown late instead of being
 dropped.
 
-Only real errors count as preferred-provider failures: a failed request, or an
-error after the first word. Being cut off at `PRIMARY_CUTOFF_MS` does not count,
-and neither do HTTP 429 responses to drafts. Two failures within 15 seconds open a
+A preferred-provider failure is a failed request, an error after the first
+word, or being cut off at `PRIMARY_CUTOFF_MS`. HTTP 429 responses to drafts do
+not count. `BREAKER_FAILURE_THRESHOLD` failures within `BREAKER_WINDOW_MS` open a
 circuit breaker for that provider: its drafts and finals go straight to the
-fallback for 45 seconds. After that, one probe request tries the preferred
-provider again while the rest stay on the fallback. Without a fallback,
+fallback, without waiting `FALLBACK_START_MS`, for `BREAKER_OPEN_MS`. After that,
+one retry request tries the preferred provider again while the rest stay on the
+fallback; if it succeeds, the preferred provider is used again, and if it fails,
+the breaker opens again. Without a fallback,
 `FALLBACK_START_MS` and `PRIMARY_CUTOFF_MS` have no effect: nothing is cut off
 and requests use their normal timeouts.
 
@@ -226,6 +228,9 @@ and requests use their normal timeouts.
 | `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
 | `FALLBACK_START_MS` | `500` | Milliseconds without any text from the preferred provider before the fallback is also asked. 50–3000. |
 | `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–3000, and greater than `FALLBACK_START_MS`. |
+| `BREAKER_FAILURE_THRESHOLD` | `2` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
+| `BREAKER_WINDOW_MS` | `15000` | Window in milliseconds for counting those failures. 1000–600000. |
+| `BREAKER_OPEN_MS` | `45000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 1000–600000. |
 
 The defaults are João's chosen values, not measurements. Measure Cerebras's
 median time to first word from the venue with `measure-first-token` (see

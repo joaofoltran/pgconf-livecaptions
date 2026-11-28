@@ -242,7 +242,20 @@ test("a final spoken during a 3 s or 4 s outage of both providers is shown befor
   }
 });
 
-test("at DRAFT_INTERVAL_MS=100 a silent primary is cut off without opening the breaker", async () => {
+test("a cutoff counts as a breaker failure", async () => {
+  await scenario(
+    (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false", BREAKER_FAILURE_THRESHOLD: "1" },
+    async (app) => {
+      app.sayFinal("one two three four.");
+      await waitFor("final", () => app.captions.some((c) => c.final), 3000);
+      assert.match(app.log(), /no first token/);
+      assert.match(app.log(), /primary-model degraded/);
+    }
+  );
+});
+
+test("at DRAFT_INTERVAL_MS=100 a silent primary opens the breaker, and later drafts skip the fallback wait", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }),
     { DRAFT_INTERVAL_MS: "100" },
@@ -256,17 +269,51 @@ test("at DRAFT_INTERVAL_MS=100 a silent primary is cut off without opening the b
       say();
       const speak = setInterval(say, 100);
       try {
-        await waitFor("drafts cut off", () => (app.log().match(/cut off/g) ?? []).length >= 3, 6000);
+        await waitFor("breaker to open", () => app.log().includes("degraded"), 6000);
         const firstDraft = app.captions.find((c) => !c.final);
         assert.ok(firstDraft, "no draft reached the overlay");
         const firstDraftMs = firstDraft.at - startedAt;
         console.log(`DRAFT first caption after primary stall: ${firstDraftMs} ms`);
         assert.ok(firstDraftMs < 1200, `first draft took ${firstDraftMs} ms, waiting for the cutoff`);
-        assert.doesNotMatch(app.log(), /degraded/, "a cutoff is not an error");
+        const primaryAtOpen = upstream.stats.primary;
+        const fallbackAtOpen = upstream.stats.fallback;
+        await waitFor("fallback-only drafts", () => upstream.stats.fallback >= fallbackAtOpen + 4, 3000);
+        assert.equal(upstream.stats.primary, primaryAtOpen, "breaker open: no new primary requests");
+        clearInterval(speak);
+        const before = app.captions.length;
+        const at = Date.now();
+        say();
+        await waitFor("next draft", () => app.captions.length > before, 2000);
+        const tookMs = app.captions.at(-1)!.at - at;
+        assert.ok(tookMs < 450, `draft took ${tookMs} ms; it should not wait FALLBACK_START_MS`);
         assert.ok(upstream.stats.maxOpen <= 8, `opened ${upstream.stats.maxOpen} concurrent streams`);
       } finally {
         clearInterval(speak);
       }
+    }
+  );
+});
+
+test("after the breaker's open time, one retry goes back to a recovered primary", async () => {
+  let recovered = false;
+  await scenario(
+    (req) => (req.provider === "primary" && !recovered ? { hang: true } : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false", BREAKER_FAILURE_THRESHOLD: "1", BREAKER_OPEN_MS: "1000" },
+    async (app, upstream) => {
+      app.sayFinal("one two three four.");
+      await waitFor("breaker to open", () => app.log().includes("degraded"), 3000);
+      recovered = true;
+      app.sayFinal("five six seven.");
+      await waitFor("second final", () => app.captions.filter((c) => c.final).length === 2, 3000);
+      assert.equal(producer(app.captions.filter((c) => c.final)[1]), "fallback", "still open: straight to the fallback");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      for (const text of ["eight nine ten.", "eleven twelve."]) {
+        app.sayFinal(text);
+        await waitFor(text, () => app.captions.some((c) => c.final && c.original === text), 3000);
+      }
+      const finals = app.captions.filter((c) => c.final).map(producer);
+      assert.deepEqual(finals.slice(2), ["primary", "primary"], "the retry succeeded and the breaker closed");
+      assert.ok(upstream.stats.primary >= 3);
     }
   );
 });

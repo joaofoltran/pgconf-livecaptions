@@ -255,6 +255,11 @@ export function loadConfig() {
     sttProxy: booleanEnv("STT_PROXY", "true"),
     liveDrafts: booleanEnv("LIVE_DRAFTS", "true"),
     ...primaryTiming(),
+    // Circuit breaker: this many primary failures within the window send every
+    // caption to the fallback for the open time, then one request retries the primary.
+    breakerFailureThreshold: integerEnv("BREAKER_FAILURE_THRESHOLD", "2", 1, 100),
+    breakerWindowMs: integerEnv("BREAKER_WINDOW_MS", "15000", 1000, 600_000),
+    breakerOpenMs: integerEnv("BREAKER_OPEN_MS", "45000", 1000, 600_000),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
     // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),

@@ -42,16 +42,15 @@ const FINAL_RETRY_FIRST_TOKEN_MS = 1500;
 const SLOW_WARN_MS = 1500;
 
 // Circuit breaker per preferred provider: Cerebras can degrade in bursts (dozens
-// of timeouts in seconds). Two failures in 15 s route its traffic to the fallback
-// for 45 s, then a single probe decides whether to return.
-const BREAKER_OPEN_MS = 45000;
+// of timeouts in seconds). BREAKER_* failures in a window route its traffic to the
+// fallback for a while, then a single probe decides whether to return.
 const breakers = new Map<string, CircuitBreaker>();
 
 function breakerFor(provider: Provider): CircuitBreaker {
   const key = `${provider.baseUrl} ${provider.model}`;
   let breaker = breakers.get(key);
   if (!breaker) {
-    breaker = new CircuitBreaker(2, 15000, BREAKER_OPEN_MS);
+    breaker = new CircuitBreaker(config.breakerFailureThreshold, config.breakerWindowMs, config.breakerOpenMs);
     breakers.set(key, breaker);
   }
   return breaker;
@@ -88,11 +87,9 @@ function hedgedTranslate(
       );
       // Drafts run several per second, so their 429s alone would trip a healthy provider.
       if (kind === "draft" && isRateLimited(err)) return;
-      // A slow first word is not an error; only failed requests open the breaker.
-      if (why === "no first token") return;
       if (breaker?.fail()) {
         console.warn(
-          `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${BREAKER_OPEN_MS / 1000} s`
+          `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${config.breakerOpenMs / 1000} s`
         );
       }
     },

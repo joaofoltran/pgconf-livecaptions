@@ -4,6 +4,9 @@ import { loadConfig, tokenEnvName } from "../src/config.js";
 
 const managedVariables = [
   "ADMIN_PASSWORD",
+  "BREAKER_FAILURE_THRESHOLD",
+  "BREAKER_OPEN_MS",
+  "BREAKER_WINDOW_MS",
   "DEEPGRAM_API_KEY",
   "DOMAIN",
   "DRAFT_INTERVAL_MS",
@@ -135,6 +138,10 @@ test("loadConfig rejects invalid numeric, boolean, and JSON settings", () => {
   assert.throws(() => loadConfig(), /STT_PROXY must be true or false/);
 
   delete process.env.STT_PROXY;
+  process.env.BREAKER_FAILURE_THRESHOLD = "0";
+  assert.throws(() => loadConfig(), /BREAKER_FAILURE_THRESHOLD must be an integer between 1 and 100/);
+
+  delete process.env.BREAKER_FAILURE_THRESHOLD;
   process.env.OPENAI_EXTRA_BODY = "[]";
   assert.throws(() => loadConfig(), /OPENAI_EXTRA_BODY must be a JSON object/);
 });
