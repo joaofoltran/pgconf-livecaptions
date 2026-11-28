@@ -47,6 +47,7 @@ const MAX_LINE_CHARS = 1000;
 // shortcut: a fixed per-room cap; make it a setting if a long event keeps
 // hitting it.
 const MAX_TERMS = 20_000;
+const MAX_RETRY_MS = 60_000;
 
 // Lowercased single words, plus two-word terms ("logical replication") made of
 // adjacent kept words in the same clause.
@@ -100,6 +101,7 @@ export class TermStats {
   // for them until the room is cleared or the app restarts.
   private readonly unreadable = new Map<string, string>();
   private timer: NodeJS.Timeout | null = null;
+  private retryMs: number;
   private readonly dir: string;
   private readonly enabledRooms: ReadonlySet<string>;
   private readonly sampleMaxLines: number;
@@ -112,6 +114,7 @@ export class TermStats {
     this.sampleMaxLines = options.sampleMaxLines;
     this.maxTerms = options.maxTerms ?? MAX_TERMS;
     this.flushMs = options.flushMs ?? 5000;
+    this.retryMs = this.flushMs;
     // A crash mid-write can leave a temp file holding speech text.
     for (const name of this.listDir()) {
       if (name.endsWith(".json.tmp")) this.remove(path.join(this.dir, name));
@@ -174,14 +177,18 @@ export class TermStats {
     this.syncDir();
   }
 
-  flush(): void {
+  // Returns false when some room's data could not be written.
+  flush(): boolean {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     for (const room of this.dirty) {
       const stats = this.cache.get(room);
-      if (!stats) continue;
+      if (!stats) {
+        this.dirty.delete(room);
+        continue;
+      }
       const file = this.file(room);
       const tmp = `${file}.tmp`;
       try {
@@ -198,6 +205,14 @@ export class TermStats {
         this.remove(tmp);
       }
     }
+    if (this.dirty.size === 0) {
+      this.retryMs = this.flushMs;
+      return true;
+    }
+    // Unsaved data stays in memory; keep retrying, backing off to once a minute.
+    this.retryMs = Math.min(this.retryMs * 2, MAX_RETRY_MS);
+    this.schedule(this.retryMs);
+    return false;
   }
 
   private file(room: string): string {
@@ -241,10 +256,13 @@ export class TermStats {
 
   private markDirty(room: string): void {
     this.dirty.add(room);
-    if (!this.timer) {
-      this.timer = setTimeout(() => this.flush(), this.flushMs);
-      this.timer.unref();
-    }
+    this.schedule(this.flushMs);
+  }
+
+  private schedule(ms: number): void {
+    if (this.timer) return;
+    this.timer = setTimeout(() => this.flush(), ms);
+    this.timer.unref();
   }
 
   // Drops the lowest counts (oldest first among ties) to 90% of the cap, so

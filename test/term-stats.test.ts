@@ -116,6 +116,27 @@ test("a corrupt file is reported once, never overwritten, and clearable", (t) =>
   assert.equal(countOf(stats, "room-1", "logical replication"), 1);
 });
 
+test("failed writes keep the data and retry with backoff", (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const dir = tempDir();
+  const file = path.join(dir, "room-1.json");
+  const stats = open(dir, { flushMs: 100 });
+  // A directory where the temp file goes makes every write fail.
+  fs.mkdirSync(`${file}.tmp`);
+
+  stats.record("room-1", "Logical replication.");
+  t.mock.timers.tick(100);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(stats.hasStoredData("room-1"), true);
+
+  fs.rmdirSync(`${file}.tmp`);
+  t.mock.timers.tick(100);
+  assert.equal(fs.existsSync(file), false, "the retry waits twice as long");
+  t.mock.timers.tick(100);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).sample, ["Logical replication."]);
+});
+
 test("stored data survives a restart, exports, and clears", () => {
   const dir = tempDir();
   const before = open(dir);

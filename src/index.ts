@@ -964,8 +964,9 @@ setInterval(() => {
 // Docker stops the container with SIGTERM; write batched term counts first.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
-    termStats.flush();
-    process.exit(0);
+    if (termStats.flush()) process.exit(0);
+    console.error("term stats: final write failed on shutdown; unsaved counts and sample lines are lost");
+    process.exit(1);
   });
 }
 
