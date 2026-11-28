@@ -204,9 +204,9 @@ A final whose attempts all failed gets one more fallback attempt, which must
 start streaming within 1.5 seconds, before the source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
 whole timeout before hedging, because it is chosen for quality, not speed.
 
-A preferred-provider failure is an error response, a timeout, or a cutoff; a
-fallback request the preferred provider still beats does not count, and
-neither do HTTP 429 responses to drafts. Two failures within 15 seconds open a
+Only real errors count as preferred-provider failures: a failed request, or an
+error after the first word. Being cut off at `PRIMARY_CUTOFF_MS` does not count,
+and neither do HTTP 429 responses to drafts. Two failures within 15 seconds open a
 circuit breaker for that provider: its drafts and finals go straight to the
 fallback for 45 seconds. After that, one probe request tries the preferred
 provider again while the rest stay on the fallback. Without a fallback,

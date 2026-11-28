@@ -205,7 +205,7 @@ test("a short remark right after a sentence does not drop that sentence's final"
   );
 });
 
-test("at DRAFT_INTERVAL_MS=100 a stalled primary is hedged and trips the breaker", async () => {
+test("at DRAFT_INTERVAL_MS=100 a silent primary is cut off without opening the breaker", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }),
     { DRAFT_INTERVAL_MS: "100" },
@@ -219,21 +219,37 @@ test("at DRAFT_INTERVAL_MS=100 a stalled primary is hedged and trips the breaker
       say();
       const speak = setInterval(say, 100);
       try {
-        await waitFor("breaker to open", () => app.log().includes("degraded"), 5000);
+        await waitFor("drafts cut off", () => (app.log().match(/cut off/g) ?? []).length >= 3, 6000);
         const firstDraft = app.captions.find((c) => !c.final);
         assert.ok(firstDraft, "no draft reached the overlay");
         const firstDraftMs = firstDraft.at - startedAt;
         console.log(`DRAFT first caption after primary stall: ${firstDraftMs} ms`);
         assert.ok(firstDraftMs < 2500, `first draft took ${firstDraftMs} ms`);
-        // Drafts kept their slots until their hedge fired: none was evicted early.
-        const primaryAtOpen = upstream.stats.primary;
-        const fallbackAtOpen = upstream.stats.fallback;
-        await waitFor("fallback-only drafts", () => upstream.stats.fallback >= fallbackAtOpen + 4, 3000);
-        assert.equal(upstream.stats.primary, primaryAtOpen, "breaker open: no new primary requests");
+        assert.doesNotMatch(app.log(), /degraded/, "a cutoff is not an error");
         assert.ok(upstream.stats.maxOpen <= 8, `opened ${upstream.stats.maxOpen} concurrent streams`);
       } finally {
         clearInterval(speak);
       }
+    }
+  );
+});
+
+test("a primary that returns errors opens the breaker, and later drafts and finals skip it", async () => {
+  await scenario(
+    (req) => (req.provider === "primary" ? { status: 500 } : { ttftMs: 20, doneMs: 40 }),
+    {},
+    async (app, upstream) => {
+      for (const text of ["alpha beta gamma", "alpha beta gamma delta"]) {
+        app.send({ type: "interim", text });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      await waitFor("breaker to open", () => app.log().includes("degraded"), 3000);
+      const primaryAtOpen = upstream.stats.primary;
+      app.send({ type: "interim", text: "alpha beta gamma delta epsilon" });
+      app.sayFinal("alpha beta gamma delta epsilon zeta");
+      await waitFor("final", () => app.captions.some((c) => c.final), 3000);
+      assert.equal(producer(app.captions.find((c) => c.final)!), "fallback");
+      assert.equal(upstream.stats.primary, primaryAtOpen, "breaker open: no new primary requests");
     }
   );
 });

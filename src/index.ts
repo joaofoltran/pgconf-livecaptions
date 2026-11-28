@@ -87,6 +87,8 @@ function hedgedTranslate(
       );
       // Drafts run several per second, so their 429s alone would trip a healthy provider.
       if (kind === "draft" && isRateLimited(err)) return;
+      // A slow first word is not an error; only failed requests open the breaker.
+      if (why === "no first token") return;
       if (breaker?.fail()) {
         console.warn(
           `${preferred.model} degraded; ${kind}s on fallback ${fallback?.model} for ${BREAKER_OPEN_MS / 1000} s`
