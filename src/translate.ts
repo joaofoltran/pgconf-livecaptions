@@ -71,6 +71,7 @@ type Attempt = {
   promise: Promise<string>;
   firstToken: Promise<void>;
   hasToken: () => boolean;
+  timedOut: () => boolean;
   abort: () => void;
 };
 
@@ -85,7 +86,11 @@ function startAttempt(
 ): Attempt {
   const abort = new AbortController();
   const unlink = linkAbort(options.signal, abort);
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, timeoutMs);
   let gotToken = false;
   let markToken!: () => void;
   const firstToken = new Promise<void>((resolve) => (markToken = resolve));
@@ -106,7 +111,7 @@ function startAttempt(
     unlink();
   });
   promise.catch(() => {});
-  return { promise, firstToken, hasToken: () => gotToken, abort: () => abort.abort() };
+  return { promise, firstToken, hasToken: () => gotToken, timedOut: () => timedOut, abort: () => abort.abort() };
 }
 
 export type HedgeOptions = TranslateOptions & {
@@ -169,6 +174,11 @@ export async function translateWithHedge(
   let backup: Attempt | null = null;
   let backupText: string | null = null;
   let cutOff = false;
+  const cutOffPreferred = () => {
+    cutOff = true;
+    options.onPreferredFirstToken?.(null);
+    reportFailure("no first token");
+  };
   const timers: NodeJS.Timeout[] = [];
   const preferred = startAttempt(
     config,
@@ -182,7 +192,10 @@ export async function translateWithHedge(
   const settled = preferred.promise.then(
     () => {},
     (err) => {
-      if (!cutOff) reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
+      if (cutOff) return;
+      // Its own timeout with no text yet is the same event as the cutoff.
+      if (!preferred.hasToken() && preferred.timedOut()) cutOffPreferred();
+      else reportFailure(preferred.hasToken() ? "error after first token" : "error", err);
     }
   );
   void preferred.firstToken.then(() => {
@@ -210,9 +223,7 @@ export async function translateWithHedge(
       }, options.fallbackAfterMs),
       setTimeout(() => {
         if (preferred.hasToken()) return;
-        cutOff = true;
-        options.onPreferredFirstToken?.(null);
-        reportFailure("no first token");
+        cutOffPreferred();
         preferred.abort();
       }, options.cutoffMs)
     );

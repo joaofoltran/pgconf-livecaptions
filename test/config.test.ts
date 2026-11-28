@@ -81,8 +81,9 @@ test("the fallback start and primary cutoff are checked at startup", () => {
   process.env.PRIMARY_CUTOFF_MS = "400";
   assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS/);
 
-  process.env.PRIMARY_CUTOFF_MS = "3500";
-  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be an integer between 50 and 3000/);
+  // Equal to the 3000 ms draft timeout, which would end drafts before the cutoff.
+  process.env.PRIMARY_CUTOFF_MS = "3000";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MS must be an integer between 50 and 2999/);
 
   delete process.env.FALLBACK_START_MS;
   delete process.env.PRIMARY_CUTOFF_MS;

@@ -65,6 +65,9 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
   return value === "true";
 }
 
+// A draft request with no answer by then is aborted as stuck.
+export const DRAFT_TIMEOUT_MS = 3000;
+
 // With a fallback: it starts if the primary has sent no text by FALLBACK_START_MS,
 // and the primary is cancelled if it has sent none by PRIMARY_CUTOFF_MS.
 // The defaults are chosen, not measured: see docs/OPERATIONS.md.
@@ -75,8 +78,8 @@ function primaryTiming() {
     }
   }
   const fallbackStartMs = integerEnv("FALLBACK_START_MS", "500", 50, 3000);
-  // Past the draft timeout the cutoff could never fire.
-  const primaryCutoffMs = integerEnv("PRIMARY_CUTOFF_MS", "1500", 50, 3000);
+  // At or past the draft timeout, the timeout would end drafts before the cutoff could.
+  const primaryCutoffMs = integerEnv("PRIMARY_CUTOFF_MS", "1500", 50, DRAFT_TIMEOUT_MS - 1);
   if (primaryCutoffMs <= fallbackStartMs) {
     throw new Error("PRIMARY_CUTOFF_MS must be greater than FALLBACK_START_MS");
   }

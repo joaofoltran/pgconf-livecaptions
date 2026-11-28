@@ -221,11 +221,12 @@ test("a preferred stream failing after its first token continues on the fallback
   );
 });
 
-test("a preferred timeout is reported even if the caller aborts before the fallback answers", async () => {
+test("a preferred timeout before any text is reported as a cutoff, even if the caller aborts later", async () => {
   const config = testConfig();
   mockProviders({ primary: "hang", fallback: { text: "tarde", ttftMs: 5000 } });
   const abort = new AbortController();
   const failures: string[] = [];
+  const firstTokens: Array<number | null> = [];
   setTimeout(() => abort.abort(), 400);
   await assert.rejects(
     hedge(config, {
@@ -234,9 +235,11 @@ test("a preferred timeout is reported even if the caller aborts before the fallb
       timeoutMs: 250,
       signal: abort.signal,
       onPreferredFailure: (why) => failures.push(why),
+      onPreferredFirstToken: (ms) => firstTokens.push(ms),
     })
   );
-  assert.deepEqual(failures, ["error"]);
+  assert.deepEqual(failures, ["no first token"], "the timeout fired before the cutoff");
+  assert.deepEqual(firstTokens, [null], "logged as cut off");
 });
 
 test("a caller abort is not reported as a preferred failure", async () => {

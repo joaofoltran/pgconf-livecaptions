@@ -227,7 +227,7 @@ and requests use their normal timeouts.
 | `FALLBACK_MODEL` | none; required with a key | Fallback model. Recommended: `openai/gpt-oss-120b`. |
 | `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
 | `FALLBACK_START_MS` | `500` | Milliseconds without any text from the preferred provider before the fallback is also asked. 50–3000. |
-| `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–3000, and greater than `FALLBACK_START_MS`. |
+| `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–2999: below the 3000 ms draft timeout, and greater than `FALLBACK_START_MS`. |
 | `BREAKER_FAILURE_THRESHOLD` | `4` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
 | `BREAKER_WINDOW_MS` | `10000` | Window in milliseconds for counting those failures. 1000–600000. |
 | `BREAKER_OPEN_MS` | `20000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 1000–600000. |
