@@ -46,6 +46,8 @@ export type Room = {
   // When the last final was sent, and how many translated finals wait to be sent.
   lastFinalAt: number;
   finalsWaiting: number;
+  // Bumped by a reset or a capture disconnect: finals queued before it are dropped.
+  epoch: number;
   // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;
   dgLastMsg: number;
@@ -82,6 +84,7 @@ export function createRoom(id: string, token: string): Room {
     finalShown: Promise.resolve(),
     lastFinalAt: 0,
     finalsWaiting: 0,
+    epoch: 0,
     dg: null,
     dgLastMsg: 0,
     dgReconnectTimer: null,

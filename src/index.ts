@@ -289,6 +289,7 @@ adminApi.post("/reset/:room", requireSameOrigin, (req, res) => {
   room.transcript = [];
   room.lastCaption = null;
   room.lastFinalAt = 0;
+  room.epoch++;
   room.pending = "";
   room.lastSource = null;
   room.lastTranslation = null;
@@ -376,6 +377,7 @@ wss.on("connection", (ws, req) => {
         room.capture = null;
         room.captureOnline = false;
         room.sttActive = false;
+        room.epoch++;
         closeDeepgram(room);
         broadcastOverlays(room, statusPayload(room));
       }
@@ -998,6 +1000,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
     // Finals go out in sentence order: one that finished early waits for the
     // sentences before it, so a late final is shown instead of being dropped.
+    const epoch = room.epoch;
     room.finalsWaiting++;
     try {
       await previousFinal;
@@ -1013,6 +1016,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     } finally {
       room.finalsWaiting--;
     }
+    if (room.epoch !== epoch) return;
     room.lastFinalAt = Date.now();
     const line: CaptionLine = {
       ts: Date.now(),

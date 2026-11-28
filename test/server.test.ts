@@ -144,7 +144,7 @@ async function startApp(upstream: string, env: Record<string, string> = {}) {
     overlay.close();
     child.kill();
   };
-  const transcript = async (): Promise<Array<{ original: string }>> => {
+  const admin = async (path: string, method = "GET") => {
     const base = `http://127.0.0.1:${port}`;
     const login = await fetch(`${base}/admin/login`, {
       method: "POST",
@@ -152,10 +152,14 @@ async function startApp(upstream: string, env: Record<string, string> = {}) {
       body: JSON.stringify({ password: "admin-password-at-least-16" }),
     });
     const cookie = (login.headers.get("set-cookie") ?? "").split(";", 1)[0];
-    const res = await fetch(`${base}/admin/api/transcript/room-1`, { headers: { cookie } });
+    return fetch(`${base}/admin/api/${path}`, { method, headers: { cookie, Origin: base } });
+  };
+  const transcript = async (): Promise<Array<{ original: string }>> => {
+    const res = await admin("transcript/room-1");
     return ((await res.json()) as { transcript: Array<{ original: string }> }).transcript;
   };
-  return { captions, send, sayFinal, stop, transcript, log: () => log };
+  const reset = async () => assert.equal((await admin("reset/room-1", "POST")).status, 200);
+  return { captions, send, sayFinal, stop, transcript, reset, log: () => log };
 }
 
 async function waitFor(what: string, check: () => boolean, timeoutMs: number): Promise<void> {
@@ -252,6 +256,24 @@ test("a remark that finishes with the slower sentence before it is shown 1.5 s l
       assert.deepEqual([...new Set(next.map((r) => r.context))], ["Okay."], "context is the sentence spoken just before");
       const transcript = (await app.transcript()).map((l) => l.original);
       assert.deepEqual(transcript, [sentence, "Okay.", "five six seven eight."]);
+    }
+  );
+});
+
+test("a final held on screen when the room is reset is dropped, not shown after the reset", async () => {
+  const sentence = "one two three four.";
+  await scenario(
+    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20 }) : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false" },
+    async (app) => {
+      app.sayFinal(sentence);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      app.sayFinal("Okay.");
+      await waitFor("the slow sentence", () => app.captions.some((c) => c.final), 3000);
+      await app.reset();
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), [sentence]);
+      assert.deepEqual(await app.transcript(), []);
     }
   );
 });
