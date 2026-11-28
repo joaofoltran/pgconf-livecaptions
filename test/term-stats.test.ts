@@ -95,6 +95,27 @@ test("leftover temp files count as stored data and are removed", () => {
   assert.equal(stats.hasStoredData("room-1"), false);
 });
 
+test("a corrupt file is reported once, never overwritten, and clearable", (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const dir = tempDir();
+  const file = path.join(dir, "room-1.json");
+  fs.writeFileSync(file, '{"terms":{"wal":3},"sample":["cut off');
+  const stats = open(dir);
+
+  assert.match(stats.loadError("room-1") ?? "", /room-1 are unreadable/);
+  stats.record("room-1", "Logical replication.");
+  stats.record("room-1", "Logical replication.");
+  assert.throws(() => stats.snapshot("room-1"), /room-1 are unreadable/);
+  stats.flush();
+  assert.equal(fs.readFileSync(file, "utf8"), '{"terms":{"wal":3},"sample":["cut off');
+  assert.equal(errors.mock.callCount(), 1);
+
+  stats.clear("room-1");
+  assert.equal(stats.loadError("room-1"), null);
+  stats.record("room-1", "Logical replication.");
+  assert.equal(countOf(stats, "room-1", "logical replication"), 1);
+});
+
 test("stored data survives a restart, exports, and clears", () => {
   const dir = tempDir();
   const before = open(dir);

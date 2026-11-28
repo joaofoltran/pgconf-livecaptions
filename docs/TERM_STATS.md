@@ -102,6 +102,20 @@ when it receives `SIGTERM` (`docker compose stop`, `up --force-recreate`,
 `./deploy.sh`). After a crash or `SIGKILL`, up to the last 5 seconds can be
 lost.
 
+### Unreadable files
+
+If a room's file cannot be read or is not valid term-stats JSON, the app never
+overwrites it. It logs the error once, stops collecting for that room, shows the
+error on the room's card in `/admin` (`termStatsError` in `/admin/api/status`),
+and the export returns HTTP 500 with the same message. To inspect the file,
+copy it out of the volume:
+
+```bash
+docker compose cp app:/app/data/term-stats/<room>.json ./<room>-unreadable.json
+```
+
+Clearing the room deletes the file and resumes collection from zero.
+
 ## How long it is kept
 
 Until an admin clears it. There is no automatic expiry.

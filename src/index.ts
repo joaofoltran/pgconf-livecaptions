@@ -216,6 +216,7 @@ adminApi.get("/status", (_req, res) => {
       transcriptLines: room.transcript.length,
       termStats: termStats.isEnabled(room.id),
       termStatsStored: termStats.hasStoredData(room.id),
+      termStatsError: termStats.loadError(room.id),
       captureUrl: `/r/${room.id}?k=${encodeURIComponent(room.token)}`,
       overlayUrl: `/r/${room.id}/overlay?k=${encodeURIComponent(room.token)}`,
     })),
@@ -250,7 +251,13 @@ adminApi.get("/terms/:room", (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
-  const snapshot = termStats.snapshot(room.id);
+  let snapshot: ReturnType<typeof termStats.snapshot>;
+  try {
+    snapshot = termStats.snapshot(room.id);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
   if (String(req.query.format ?? "json") === "txt") {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${room.id}-terms.txt"`);

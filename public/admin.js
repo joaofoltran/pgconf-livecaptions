@@ -92,6 +92,11 @@ async function loadStatus() {
       });
       terms.appendChild(clear);
       card.appendChild(terms);
+      if (room.termStatsError) {
+        const error = document.createElement("p");
+        error.textContent = `Erro nos termos: ${room.termStatsError}`;
+        card.appendChild(error);
+      }
     }
 
     roomsEl.appendChild(card);

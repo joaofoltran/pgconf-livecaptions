@@ -96,6 +96,9 @@ export type TermStatsOptions = {
 export class TermStats {
   private readonly cache = new Map<string, RoomStats>();
   private readonly dirty = new Set<string>();
+  // Rooms whose file could not be read, with the reason. Collection pauses
+  // for them until the room is cleared or the app restarts.
+  private readonly unreadable = new Map<string, string>();
   private timer: NodeJS.Timeout | null = null;
   private readonly dir: string;
   private readonly enabledRooms: ReadonlySet<string>;
@@ -113,10 +116,22 @@ export class TermStats {
     for (const name of this.listDir()) {
       if (name.endsWith(".json.tmp")) this.remove(path.join(this.dir, name));
     }
+    // Load now so an unreadable file shows in the admin status at startup.
+    for (const room of this.enabledRooms) {
+      try {
+        this.load(room);
+      } catch {
+        // Kept in `unreadable` and reported by loadError().
+      }
+    }
   }
 
   isEnabled(room: string): boolean {
     return this.enabledRooms.has(room);
+  }
+
+  loadError(room: string): string | null {
+    return this.unreadable.get(room) ?? null;
   }
 
   hasStoredData(room: string): boolean {
@@ -125,7 +140,7 @@ export class TermStats {
   }
 
   record(room: string, text: string): void {
-    if (!this.enabledRooms.has(room)) return;
+    if (!this.enabledRooms.has(room) || this.unreadable.has(room)) return;
     const stats = this.load(room);
     const line = text.slice(0, MAX_LINE_CHARS).replace(/[\uD800-\uDBFF]$/, "");
     for (const term of extractTerms(line)) {
@@ -152,6 +167,7 @@ export class TermStats {
   clear(room: string): void {
     this.cache.delete(room);
     this.dirty.delete(room);
+    this.unreadable.delete(room);
     const file = this.file(room);
     fs.rmSync(file, { force: true });
     fs.rmSync(`${file}.tmp`, { force: true });
@@ -243,15 +259,27 @@ export class TermStats {
   }
 
   // A corrupt file throws instead of being replaced, so a bad read never
-  // overwrites the counts already on disk. A file over the current limits
-  // (written before a cap was lowered) is trimmed and rewritten.
+  // overwrites the counts already on disk. The failure is remembered and
+  // logged once. A file over the current limits (written before a cap was
+  // lowered) is trimmed and rewritten.
   private load(room: string): RoomStats {
     let stats = this.cache.get(room);
     if (stats) return stats;
+    const failure = this.unreadable.get(room);
+    if (failure) throw new Error(failure);
+    const file = this.file(room);
     try {
-      stats = parseStats(fs.readFileSync(this.file(room), "utf8"));
+      stats = parseStats(fs.readFileSync(file, "utf8"));
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        const reason = err instanceof Error ? err.message : String(err);
+        const message =
+          `Stored term stats for ${room} are unreadable (${file}: ${reason}). ` +
+          "Nothing is collected for this room until it is cleared.";
+        this.unreadable.set(room, message);
+        console.error(message);
+        throw new Error(message);
+      }
       stats = { terms: new Map(), sample: [] };
     }
     const cappedTerms = this.enforceCap(stats.terms);
