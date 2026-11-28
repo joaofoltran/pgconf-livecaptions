@@ -300,6 +300,15 @@ call the `/v1/auth/grant` endpoint.
 | `LIVE_DRAFTS` | `true` | Translate interim speech instead of waiting only for final phrases. |
 | `DRAFT_INTERVAL_MS` | `350` | Minimum interval between draft translation attempts for a room. |
 | `DRAFTS_PER_SECOND` | `15` | Global draft request budget shared across all rooms. |
+| `MIN_FINAL_DISPLAY_MS` | `1500` | Minimum milliseconds a finished sentence stays on the overlay's top line before the next one replaces it. 0 to 5000; 0 turns it off. |
+
+When a slow sentence finishes together with a quicker one spoken after it,
+both are shown in spoken order, and the second waits until the first has been
+on the top line for `MIN_FINAL_DISPLAY_MS`. Without the wait the first would be
+replaced within a millisecond and nobody could read it. The words being spoken
+now, on the bottom line, are never held back. When more than two finished
+sentences are waiting at once, the older ones skip the wait, so the top line
+falls at most about 3 seconds behind.
 
 Drafts make the screen feel responsive but create substantially more provider
 requests. If the provider returns HTTP 429 responses:

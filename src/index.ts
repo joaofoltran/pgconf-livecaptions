@@ -39,6 +39,9 @@ const FINAL_TIMEOUT_MS = 3500;
 const FALLBACK_TIMEOUT_MS = 6000;
 const FINAL_RETRY_FIRST_TOKEN_MS = 1500;
 const SLOW_WARN_MS = 1500;
+// More finished sentences than this waiting to be shown skip the minimum display
+// time, so the overlay's top line falls at most a few seconds behind.
+const MAX_FINALS_HELD = 2;
 
 // Circuit breaker per preferred provider: Cerebras can degrade in bursts (dozens
 // of timeouts in seconds). BREAKER_* failures in a window route its traffic to the
@@ -286,6 +289,7 @@ adminApi.post("/reset/:room", requireSameOrigin, (req, res) => {
   }
   room.transcript = [];
   room.lastCaption = null;
+  room.lastFinalAt = 0;
   room.pending = "";
   room.lastSource = null;
   room.lastTranslation = null;
@@ -995,12 +999,22 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
     // Finals go out in sentence order: one that finished early waits for the
     // sentences before it, so a late final is shown instead of being dropped.
-    await previousFinal;
-    // Set after the wait, so the next sentence's context is the last one spoken, not the last to finish.
-    if (isTranslated) {
-      room.lastSource = original;
-      room.lastTranslation = translated;
+    room.finalsWaiting++;
+    try {
+      await previousFinal;
+      // Set after the wait, so the next sentence's context is the last one spoken, not the last to finish.
+      if (isTranslated) {
+        room.lastSource = original;
+        room.lastTranslation = translated;
+      }
+      const holdMs = room.lastFinalAt + config.minFinalDisplayMs - Date.now();
+      if (holdMs > 0 && room.finalsWaiting <= MAX_FINALS_HELD) {
+        await new Promise((resolve) => setTimeout(resolve, holdMs));
+      }
+    } finally {
+      room.finalsWaiting--;
     }
+    room.lastFinalAt = Date.now();
     const line: CaptionLine = {
       ts: Date.now(),
       original,

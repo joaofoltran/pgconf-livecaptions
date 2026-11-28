@@ -144,7 +144,18 @@ async function startApp(upstream: string, env: Record<string, string> = {}) {
     overlay.close();
     child.kill();
   };
-  return { captions, send, sayFinal, stop, log: () => log };
+  const transcript = async (): Promise<Array<{ original: string }>> => {
+    const base = `http://127.0.0.1:${port}`;
+    const login = await fetch(`${base}/admin/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base },
+      body: JSON.stringify({ password: "admin-password-at-least-16" }),
+    });
+    const cookie = (login.headers.get("set-cookie") ?? "").split(";", 1)[0];
+    const res = await fetch(`${base}/admin/api/transcript/room-1`, { headers: { cookie } });
+    return ((await res.json()) as { transcript: Array<{ original: string }> }).transcript;
+  };
+  return { captions, send, sayFinal, stop, transcript, log: () => log };
 }
 
 async function waitFor(what: string, check: () => boolean, timeoutMs: number): Promise<void> {
@@ -213,24 +224,55 @@ test("a short remark right after a sentence does not drop that sentence's final"
   );
 });
 
-test("a remark that finishes first does not drop the slower final before it, and is the next sentence's context", async () => {
+test("a remark that finishes with the slower sentence before it is shown 1.5 s later, without holding up drafts", async () => {
   const sentence = "one two three four.";
   await scenario(
     // The sentence waits for the silent primary's cutoff even though the fallback has finished.
     (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }) : { ttftMs: 20 }),
-    { LIVE_DRAFTS: "false" },
+    {},
     async (app, upstream) => {
       app.sayFinal(sentence);
       await new Promise((resolve) => setTimeout(resolve, 300));
       app.sayFinal("Okay.");
-      await waitFor("both finals", () => app.captions.filter((c) => c.final).length === 2, 4000);
+      await waitFor("the slow sentence", () => app.captions.some((c) => c.final), 3000);
+      // Both finals are ready now; the next sentence's drafts must not wait for the remark.
+      app.send({ type: "interim", text: "five six seven" });
+      await waitFor("both finals", () => app.captions.filter((c) => c.final).length === 2, 3000);
       const finals = app.captions.filter((c) => c.final);
       assert.deepEqual(finals.map((c) => c.original), [sentence, "Okay."]);
       assert.equal(producer(finals[0]), "fallback");
-      app.sayFinal("five six seven.");
+      const shownFor = finals[1].at - finals[0].at;
+      assert.ok(shownFor >= 1450, `the slow sentence was on screen for ${shownFor} ms`);
+      const draft = app.captions.find((c) => !c.final && c.original === "five six seven");
+      assert.ok(draft && draft.at < finals[1].at, "a draft of the next sentence was shown during the wait");
+
+      app.sayFinal("five six seven eight.");
       await waitFor("third final", () => app.captions.filter((c) => c.final).length === 3, 4000);
-      const third = upstream.stats.requests.find((r) => r.source === "five six seven.");
-      assert.equal(third?.context, "Okay.", "context is the sentence spoken just before");
+      const next = upstream.stats.requests.filter((r) => r.source.startsWith("five six"));
+      assert.deepEqual([...new Set(next.map((r) => r.context))], ["Okay."], "context is the sentence spoken just before");
+      const transcript = (await app.transcript()).map((l) => l.original);
+      assert.deepEqual(transcript, [sentence, "Okay.", "five six seven eight."]);
+    }
+  );
+});
+
+test("four finals released together are shown within about 3 s, so the top line never falls far behind", async () => {
+  const sentence = "one two three four.";
+  const remarks = ["Okay.", "Right.", "Yes."];
+  await scenario(
+    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20 }) : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false" },
+    async (app) => {
+      app.sayFinal(sentence);
+      for (const remark of remarks) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        app.sayFinal(remark);
+      }
+      await waitFor("all finals", () => app.captions.filter((c) => c.final).length === 4, 6000);
+      const finals = app.captions.filter((c) => c.final);
+      assert.deepEqual(finals.map((c) => c.original), [sentence, ...remarks]);
+      const spread = finals[3].at - finals[0].at;
+      assert.ok(spread >= 2900 && spread < 3500, `the last of four was shown ${spread} ms after the first`);
     }
   );
 });

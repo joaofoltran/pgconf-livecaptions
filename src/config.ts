@@ -264,6 +264,8 @@ export function loadConfig() {
     breakerWindowMs: integerEnv("BREAKER_WINDOW_MS", "10000", 1000, 600_000),
     breakerOpenMs: integerEnv("BREAKER_OPEN_MS", "20000", 1000, 600_000),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
+    // Each finished sentence stays on the overlay's top line at least this long.
+    minFinalDisplayMs: integerEnv("MIN_FINAL_DISPLAY_MS", "1500", 0, 5000),
     // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),
     rooms,

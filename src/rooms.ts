@@ -43,6 +43,9 @@ export type Room = {
   renderedFinalSeq: number;
   // Settles once the latest flushed sentence's final has been sent.
   finalShown: Promise<void>;
+  // When the last final was sent, and how many translated finals wait to be sent.
+  lastFinalAt: number;
+  finalsWaiting: number;
   // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;
   dgLastMsg: number;
@@ -77,6 +80,8 @@ export function createRoom(id: string, token: string): Room {
     lockedPrefix: "",
     renderedFinalSeq: 0,
     finalShown: Promise.resolve(),
+    lastFinalAt: 0,
+    finalsWaiting: 0,
     dg: null,
     dgLastMsg: 0,
     dgReconnectTimer: null,
