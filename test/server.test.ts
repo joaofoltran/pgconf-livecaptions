@@ -159,7 +159,7 @@ async function startApp(upstream: string, env: Record<string, string> = {}) {
     return ((await res.json()) as { transcript: Array<{ original: string }> }).transcript;
   };
   const reset = async () => assert.equal((await admin("reset/room-1", "POST")).status, 200);
-  return { captions, send, sayFinal, stop, transcript, reset, log: () => log };
+  return { captions, send, sayFinal, stop, transcript, reset, dropCapture: () => capture.close(), log: () => log };
 }
 
 async function waitFor(what: string, check: () => boolean, timeoutMs: number): Promise<void> {
@@ -260,22 +260,26 @@ test("a remark that finishes with the slower sentence before it is shown 1.5 s l
   );
 });
 
-test("a final held on screen when the room is reset is dropped, not shown after the reset", async () => {
+test("a final held on screen is not shown after a reset or a capture disconnect, and only a reset drops it from the transcript", async () => {
   const sentence = "one two three four.";
-  await scenario(
-    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20 }) : { ttftMs: 20 }),
-    { LIVE_DRAFTS: "false" },
-    async (app) => {
-      app.sayFinal(sentence);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      app.sayFinal("Okay.");
-      await waitFor("the slow sentence", () => app.captions.some((c) => c.final), 3000);
-      await app.reset();
-      await new Promise((resolve) => setTimeout(resolve, 1800));
-      assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), [sentence]);
-      assert.deepEqual(await app.transcript(), []);
-    }
-  );
+  for (const event of ["reset", "disconnect"] as const) {
+    await scenario(
+      (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20 }) : { ttftMs: 20 }),
+      { LIVE_DRAFTS: "false" },
+      async (app) => {
+        app.sayFinal(sentence);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        app.sayFinal("Okay.");
+        await waitFor("the slow sentence", () => app.captions.some((c) => c.final), 3000);
+        if (event === "reset") await app.reset();
+        else app.dropCapture();
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+        assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), [sentence], event);
+        const transcript = (await app.transcript()).map((l) => l.original);
+        assert.deepEqual(transcript, event === "reset" ? [] : [sentence, "Okay."], event);
+      }
+    );
+  }
 });
 
 test("four finals released together are shown within about 3 s, so the top line never falls far behind", async () => {

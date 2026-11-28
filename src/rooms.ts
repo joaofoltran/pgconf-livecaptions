@@ -46,7 +46,7 @@ export type Room = {
   // When the last final was sent, and how many translated finals wait to be sent.
   lastFinalAt: number;
   finalsWaiting: number;
-  // Bumped by a reset or a capture disconnect: finals queued before it are dropped.
+  // Bumped by a reset or a capture disconnect: finals queued before it are not shown.
   epoch: number;
   // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;

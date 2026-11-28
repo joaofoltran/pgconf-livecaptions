@@ -1001,6 +1001,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     // Finals go out in sentence order: one that finished early waits for the
     // sentences before it, so a late final is shown instead of being dropped.
     const epoch = room.epoch;
+    const transcript = room.transcript;
     room.finalsWaiting++;
     try {
       await previousFinal;
@@ -1016,8 +1017,10 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     } finally {
       room.finalsWaiting--;
     }
-    if (room.epoch !== epoch) return;
-    room.lastFinalAt = Date.now();
+    // /reset replaces the transcript, so a sentence spoken before it is dropped. A capture
+    // disconnect (maybe a blip) keeps the sentence in the transcript but off the overlay.
+    if (room.transcript !== transcript) return;
+    const show = room.epoch === epoch;
     const line: CaptionLine = {
       ts: Date.now(),
       original,
@@ -1025,11 +1028,13 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
       direction,
       final: true,
     };
-    room.lastCaption = line;
     room.transcript.push(line);
     if (room.transcript.length > 2000) {
       room.transcript.splice(0, room.transcript.length - 2000);
     }
+    if (!show) return;
+    room.lastFinalAt = Date.now();
+    room.lastCaption = line;
     emitCaption(room, seq, { type: "caption", seq, ...line });
   } finally {
     finalShown();
