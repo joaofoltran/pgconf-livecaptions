@@ -37,17 +37,18 @@ function summary(samples: number[]): string {
 }
 
 async function fromLogs(): Promise<void> {
-  const byModel = new Map<string, number[]>();
-  const line = /first token \S+ (?:draft|final) (\S+) (?:(\d+) ms|>\d+ ms \(cut off\))/;
+  // Grouped by role and model: a FINAL_* provider may run the same model as the primary.
+  const byProvider = new Map<string, number[]>();
+  const line = /first token \S+ (?:draft|final) ((?:primary|final) \S+) (?:(\d+) ms|>\d+ ms \(cut off\))/;
   for await (const text of readline.createInterface({ input: process.stdin })) {
     const m = line.exec(text);
     if (!m) continue;
-    const samples = byModel.get(m[1]) ?? [];
+    const samples = byProvider.get(m[1]) ?? [];
     samples.push(m[2] === undefined ? Infinity : Number(m[2]));
-    byModel.set(m[1], samples);
+    byProvider.set(m[1], samples);
   }
-  if (!byModel.size) throw new Error('no "first token" lines on stdin');
-  for (const [model, samples] of byModel) console.log(`${model}: ${summary(samples)}`);
+  if (!byProvider.size) throw new Error('no "first token" lines on stdin');
+  for (const [provider, samples] of byProvider) console.log(`${provider}: ${summary(samples)}`);
 }
 
 async function live(count: number): Promise<void> {

@@ -380,7 +380,7 @@ test("a primary slower than the fallback start but before the cutoff serves draf
       assert.ok(upstream.stats.fallback > 0, "the fallback started");
       assert.equal(producer(app.captions.find((c) => c.final)!), "primary");
       assert.doesNotMatch(app.log(), /no first token|degraded/);
-      assert.match(app.log(), /first token room-1 draft primary-model \d+ ms/);
+      assert.match(app.log(), /first token room-1 draft primary primary-model \d+ ms/);
     }
   );
 });
@@ -476,6 +476,7 @@ test("a slower FINAL_* provider is not hedged at FALLBACK_START_MS", async () =>
       await waitFor("final", () => app.captions.some((c) => c.final), 4000);
       assert.equal(producer(app.captions.find((c) => c.final)!), "final");
       assert.equal(upstream.stats.fallback, 0);
+      assert.match(app.log(), /first token room-1 final final final-model \d+ ms/, "logged under the final role");
     }
   );
 });

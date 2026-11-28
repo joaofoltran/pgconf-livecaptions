@@ -436,10 +436,12 @@ docker compose logs --no-color app | docker compose exec -T app node dist/measur
 ```
 
 Both print `n`, `median`, `p90`, and how many requests were cut off. The log
-lines look like `first token room-1 draft gpt-oss-120b 231 ms` or
+lines look like `first token room-1 draft primary gpt-oss-120b 231 ms` or
 `... >1500 ms (cut off)`; cut-off requests count as slower than any measured one.
-Percentiles interpolate between the two nearest samples, so the median of an
-even number of samples is the mean of the middle two.
+The role is `primary`, or `final` for a `FINAL_*` provider, and `--from-logs`
+reports each role and model separately. Percentiles interpolate between the two
+nearest samples, so the median of an even number of samples is the mean of the
+middle two.
 Set `FALLBACK_START_MS` to the measured median, then redeploy.
 
 ## Incident response

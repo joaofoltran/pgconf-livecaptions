@@ -96,7 +96,7 @@ function hedgedTranslate(
     onPreferredSuccess: () => breaker?.succeed(),
     // Read by `measure-first-token --from-logs` to compute the median and p90.
     onPreferredFirstToken: (ms) =>
-      console.log(`first token ${room.id} ${kind} ${preferred.model} ${ms === null ? `>${cutoffMs} ms (cut off)` : `${ms} ms`}`),
+      console.log(`first token ${room.id} ${kind} ${quality ? "final" : "primary"} ${preferred.model} ${ms === null ? `>${cutoffMs} ms (cut off)` : `${ms} ms`}`),
   });
   if (route === "probe") {
     void promise.catch(() => {}).finally(() => breaker?.release());
