@@ -228,9 +228,9 @@ and requests use their normal timeouts.
 | `FALLBACK_EXTRA_BODY` | empty object | JSON fields added to fallback requests; colliding keys are ignored. Recommended with Groq: `{"reasoning_effort":"low"}`. |
 | `FALLBACK_START_MS` | `500` | Milliseconds without any text from the preferred provider before the fallback is also asked. 50–3000. |
 | `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–3000, and greater than `FALLBACK_START_MS`. |
-| `BREAKER_FAILURE_THRESHOLD` | `2` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
-| `BREAKER_WINDOW_MS` | `15000` | Window in milliseconds for counting those failures. 1000–600000. |
-| `BREAKER_OPEN_MS` | `45000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 1000–600000. |
+| `BREAKER_FAILURE_THRESHOLD` | `4` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
+| `BREAKER_WINDOW_MS` | `10000` | Window in milliseconds for counting those failures. 1000–600000. |
+| `BREAKER_OPEN_MS` | `20000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 1000–600000. |
 
 The defaults are João's chosen values, not measurements. Measure Cerebras's
 median time to first word from the venue with `measure-first-token` (see
@@ -238,6 +238,15 @@ median time to first word from the venue with `measure-first-token` (see
 `FALLBACK_START_MS` to it. `FIRST_TOKEN_MS`, `PRIMARY_MEDIAN_FIRST_TOKEN_MS` and
 `PRIMARY_CUTOFF_MULTIPLIER` were replaced by these two settings; the app refuses
 to start while any of them is still set.
+
+The breaker defaults come from simulations with mock providers, not from
+the venue, and João has not confirmed them yet. With live drafts on, a silent
+Cerebras opened the breaker about 5 seconds after it went quiet; when 1 answer in
+12 was slower than the cutoff, the breaker opened in 1 of 3 runs; and captions
+came back to Cerebras within the 20-second open time after it recovered. With
+`LIVE_DRAFTS=false` only finals are sent, about one every few seconds, so 4
+failures rarely fit in 10 seconds and the breaker never opened in the simulation.
+For that mode set `BREAKER_FAILURE_THRESHOLD=2` and `BREAKER_WINDOW_MS=15000`.
 
 The fallback base URL and model have no defaults, so a key is never sent to a
 provider it does not belong to. If `FALLBACK_API_KEY` is set without

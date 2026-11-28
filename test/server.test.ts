@@ -321,7 +321,7 @@ test("after the breaker's open time, one retry goes back to a recovered primary"
 test("a primary that returns errors opens the breaker, and later drafts and finals skip it", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { status: 500 } : { ttftMs: 20, doneMs: 40 }),
-    {},
+    { BREAKER_FAILURE_THRESHOLD: "2" },
     async (app, upstream) => {
       for (const text of ["alpha beta gamma", "alpha beta gamma delta"]) {
         app.send({ type: "interim", text });
