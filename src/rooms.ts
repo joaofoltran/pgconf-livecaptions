@@ -41,6 +41,8 @@ export type Room = {
   // lock it and have the model continue from there so the live line only grows.
   lockedPrefix: string;
   renderedFinalSeq: number;
+  // Settles once the latest flushed sentence's final has been sent.
+  finalShown: Promise<void>;
   // Server-side STT: the capture page sends PCM and the server connects to Deepgram.
   dg: WebSocket | null;
   dgLastMsg: number;
@@ -74,6 +76,7 @@ export function createRoom(id: string, token: string): Room {
     sentence: 0,
     lockedPrefix: "",
     renderedFinalSeq: 0,
+    finalShown: Promise.resolve(),
     dg: null,
     dgLastMsg: 0,
     dgReconnectTimer: null,

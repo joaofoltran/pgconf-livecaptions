@@ -205,6 +205,43 @@ test("a short remark right after a sentence does not drop that sentence's final"
   );
 });
 
+test("a remark that finishes first does not drop the slower final before it", async () => {
+  const sentence = "one two three four.";
+  await scenario(
+    // The sentence waits for the silent primary's cutoff even though the fallback has finished.
+    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }) : { ttftMs: 20 }),
+    { LIVE_DRAFTS: "false" },
+    async (app) => {
+      app.sayFinal(sentence);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      app.sayFinal("Okay.");
+      await waitFor("both finals", () => app.captions.filter((c) => c.final).length === 2, 4000);
+      const finals = app.captions.filter((c) => c.final);
+      assert.deepEqual(finals.map((c) => c.original), [sentence, "Okay."]);
+      assert.equal(producer(finals[0]), "fallback");
+    }
+  );
+});
+
+test("a final spoken during a 3 s or 4 s outage of both providers is shown before the next one", async () => {
+  for (const outageMs of [3000, 4000]) {
+    const outageEnd = Date.now() + outageMs;
+    await scenario(
+      () => (Date.now() < outageEnd ? { hang: true } : { ttftMs: 20 }),
+      { LIVE_DRAFTS: "false" },
+      async (app) => {
+        app.sayFinal("one two three four.");
+        await new Promise((resolve) => setTimeout(resolve, outageEnd + 300 - Date.now()));
+        app.sayFinal("five six seven eight.");
+        await waitFor("both finals", () => app.captions.filter((c) => c.final).length === 2, 8000);
+        const finals = app.captions.filter((c) => c.final);
+        assert.deepEqual(finals.map((c) => c.original), ["one two three four.", "five six seven eight."]);
+        assert.notEqual(finals[0].translated, finals[0].original, `translated after the ${outageMs} ms outage`);
+      }
+    );
+  }
+});
+
 test("at DRAFT_INTERVAL_MS=100 a silent primary is cut off without opening the breaker", async () => {
   await scenario(
     (req) => (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }),

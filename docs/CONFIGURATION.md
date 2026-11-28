@@ -202,7 +202,10 @@ A preferred stream that fails after its first word continues on the fallback
 from the text already shown.
 A final whose attempts all failed gets one more fallback attempt, which must
 start streaming within 1.5 seconds, before the source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's
-whole timeout before hedging, because it is chosen for quality, not speed.
+whole timeout before falling back, because it is chosen for quality, not speed.
+Finals are shown in sentence order: a final that finishes before an earlier
+sentence's final waits for it, so a slow final is shown late instead of being
+dropped.
 
 Only real errors count as preferred-provider failures: a failed request, or an
 error after the first word. Being cut off at `PRIMARY_CUTOFF_MS` does not count,

@@ -885,105 +885,115 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
 
   const direction = room.direction;
   const seq = ++room.seq;
-  // Drafts started before this final belong to the closed sentence: none may
-  // render or become lastDraft, or the next sentence's draft hits the shrink guard.
-  room.sentence++;
-  const context = translationContext(room);
+  const previousFinal = room.finalShown;
+  let finalShown!: () => void;
+  room.finalShown = new Promise((resolve) => (finalShown = resolve));
+  try {
+    // Drafts started before this final belong to the closed sentence: none may
+    // render or become lastDraft, or the next sentence's draft hits the shrink guard.
+    room.sentence++;
+    const context = translationContext(room);
 
-  // Stream the final word by word onto an empty live line. Over a visible draft,
-  // the final replaces it in one step: its first partials would erase the draft.
-  const onPartial = (partial: string) => {
-    if (room.renderedSeq !== seq && room.renderedSeq > room.renderedFinalSeq) return;
-    emitCaption(room, seq, {
-      type: "caption",
-      seq,
-      original,
-      translated: partial,
-      direction,
-      final: false,
-    });
-  };
+    // Stream the final word by word onto an empty live line. Over a visible draft,
+    // the final replaces it in one step: its first partials would erase the draft.
+    const onPartial = (partial: string) => {
+      if (room.renderedSeq !== seq && room.renderedSeq > room.renderedFinalSeq) return;
+      emitCaption(room, seq, {
+        type: "caption",
+        seq,
+        original,
+        translated: partial,
+        direction,
+        final: false,
+      });
+    };
 
-  // Fast path: if the latest draft already translated this exact sentence, avoid
-  // another OpenAI round trip; emit the final immediately without rewriting the display.
-  // In hybrid mode, the final exists specifically for the better provider to redo it.
-  const wanted = normalizeText(original);
-  let reusable =
-    !config.finalProvider && room.lastDraft && normalizeText(room.lastDraft.source) === wanted
-      ? room.lastDraft.translated
-      : null;
-  room.lastDraft = null;
+    // Fast path: if the latest draft already translated this exact sentence, avoid
+    // another OpenAI round trip; emit the final immediately without rewriting the display.
+    // In hybrid mode, the final exists specifically for the better provider to redo it.
+    const wanted = normalizeText(original);
+    let reusable =
+      !config.finalProvider && room.lastDraft && normalizeText(room.lastDraft.source) === wanted
+        ? room.lastDraft.translated
+        : null;
+    room.lastDraft = null;
 
-  // Deepgram's latest interim is usually identical to the final, and its draft
-  // is still in flight when flush arrives. Waiting is faster than starting
-  // another translation.
-  const matching =
-    !reusable && !config.finalProvider
-      ? [...room.draftsInFlight].find(([, draft]) => normalizeText(draft.source) === wanted)
-      : undefined;
-  // Retired drafts can no longer render; free their streams for the next sentence.
-  // Each draft's own finally releases its slot. A draft an earlier flush awaits
-  // is that sentence's final: aborting it would re-translate it behind this one.
-  for (const [abort, draft] of room.draftsInFlight) {
-    if (abort !== matching?.[0] && !draft.awaited) abort.abort();
-  }
-  if (matching) {
-    const [abort, draft] = matching;
-    draft.awaited = true;
-    const budget = config.primaryCutoffMs + 1500;
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      // Do not wait for this draft if it is stalled at the provider. One that is
-      // already streaming is nearly done, so give it up to twice the budget.
-      reusable = await Promise.race([
-        draft.promise,
-        new Promise<null>((resolve) => {
-          timer = setTimeout(() => {
-            if (!draft.gotToken) return resolve(null);
-            timer = setTimeout(() => resolve(null), budget);
-          }, budget);
-        }),
-      ]);
-    } catch {
-      reusable = null;
+    // Deepgram's latest interim is usually identical to the final, and its draft
+    // is still in flight when flush arrives. Waiting is faster than starting
+    // another translation.
+    const matching =
+      !reusable && !config.finalProvider
+        ? [...room.draftsInFlight].find(([, draft]) => normalizeText(draft.source) === wanted)
+        : undefined;
+    // Retired drafts can no longer render; free their streams for the next sentence.
+    // Each draft's own finally releases its slot. A draft an earlier flush awaits
+    // is that sentence's final: aborting it would re-translate it behind this one.
+    for (const [abort, draft] of room.draftsInFlight) {
+      if (abort !== matching?.[0] && !draft.awaited) abort.abort();
     }
-    clearTimeout(timer);
-    if (!reusable) abort.abort();
-  }
+    if (matching) {
+      const [abort, draft] = matching;
+      draft.awaited = true;
+      const budget = config.primaryCutoffMs + 1500;
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        // Do not wait for this draft if it is stalled at the provider. One that is
+        // already streaming is nearly done, so give it up to twice the budget.
+        reusable = await Promise.race([
+          draft.promise,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => {
+              if (!draft.gotToken) return resolve(null);
+              timer = setTimeout(() => resolve(null), budget);
+            }, budget);
+          }),
+        ]);
+      } catch {
+        reusable = null;
+      }
+      clearTimeout(timer);
+      if (!reusable) abort.abort();
+    }
 
-  let translated = original;
-  if (reusable) {
-    translated = closePunctuation(reusable, original);
-    room.lastSource = original;
-    room.lastTranslation = translated;
-  } else {
-    try {
-      translated = capitalizeFirst(
-        await translateFinal(room, original, direction, context, onPartial, prefix, !complete)
-      );
+    let translated = original;
+    if (reusable) {
+      translated = closePunctuation(reusable, original);
       room.lastSource = original;
       room.lastTranslation = translated;
-    } catch (err) {
-      // Only here does the display show source-language text as a last resort.
-      if (isAbortError(err)) console.error(`translate failed ${room.id}: timeout`);
-      else console.error("translate failed", err);
-      if (ws) sendJson(ws, { type: "translate_error" });
+    } else {
+      try {
+        translated = capitalizeFirst(
+          await translateFinal(room, original, direction, context, onPartial, prefix, !complete)
+        );
+        room.lastSource = original;
+        room.lastTranslation = translated;
+      } catch (err) {
+        // Only here does the display show source-language text as a last resort.
+        if (isAbortError(err)) console.error(`translate failed ${room.id}: timeout`);
+        else console.error("translate failed", err);
+        if (ws) sendJson(ws, { type: "translate_error" });
+      }
     }
-  }
 
-  const line: CaptionLine = {
-    ts: Date.now(),
-    original,
-    translated,
-    direction,
-    final: true,
-  };
-  room.lastCaption = line;
-  room.transcript.push(line);
-  if (room.transcript.length > 2000) {
-    room.transcript.splice(0, room.transcript.length - 2000);
+    // Finals go out in sentence order: one that finished early waits for the
+    // sentences before it, so a late final is shown instead of being dropped.
+    await previousFinal;
+    const line: CaptionLine = {
+      ts: Date.now(),
+      original,
+      translated,
+      direction,
+      final: true,
+    };
+    room.lastCaption = line;
+    room.transcript.push(line);
+    if (room.transcript.length > 2000) {
+      room.transcript.splice(0, room.transcript.length - 2000);
+    }
+    emitCaption(room, seq, { type: "caption", seq, ...line });
+  } finally {
+    finalShown();
   }
-  emitCaption(room, seq, { type: "caption", seq, ...line });
 }
 
 setInterval(() => {
