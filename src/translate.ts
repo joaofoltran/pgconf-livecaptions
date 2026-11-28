@@ -125,6 +125,8 @@ export type HedgeOptions = TranslateOptions & {
   onPreferredSuccess?: () => void;
   // Milliseconds to the preferred provider's first token, or null when it was cut off.
   onPreferredFirstToken?: (ms: number | null) => void;
+  // The fallback finished while the preferred provider has sent no text and may still replace it.
+  onFallbackDone?: (translated: string) => void;
 };
 
 // Send to the preferred provider only. If it streams nothing by fallbackAfterMs,
@@ -165,6 +167,7 @@ export async function translateWithHedge(
 
   const startedAt = Date.now();
   let backup: Attempt | null = null;
+  let backupText: string | null = null;
   let cutOff = false;
   const timers: NodeJS.Timeout[] = [];
   const preferred = startAttempt(
@@ -188,10 +191,22 @@ export async function translateWithHedge(
     options.onPreferredFirstToken?.(Date.now() - startedAt);
   });
 
+  const startBackup = () => {
+    const attempt = startFallback(options, preferred);
+    attempt.promise.then(
+      (out) => {
+        backupText = out;
+        if (!preferred.hasToken() && !cutOff && !callerAborted()) options.onFallbackDone?.(out);
+      },
+      () => {}
+    );
+    return attempt;
+  };
+
   if (fallback) {
     timers.push(
       setTimeout(() => {
-        if (!preferred.hasToken()) backup ??= startFallback(options, preferred);
+        if (!preferred.hasToken()) backup ??= startBackup();
       }, options.fallbackAfterMs),
       setTimeout(() => {
         if (preferred.hasToken()) return;
@@ -210,7 +225,7 @@ export async function translateWithHedge(
 
   if (!preferred.hasToken()) {
     if (callerAborted() || !fallback) return preferred.promise;
-    backup ??= startFallback(options, preferred);
+    backup ??= startBackup();
     return backup.promise;
   }
   try {
@@ -219,6 +234,8 @@ export async function translateWithHedge(
     return out;
   } catch (err) {
     if (callerAborted() || !fallback) throw err;
+    // The fallback finished before the preferred provider's first word: keep its result.
+    if (backupText !== null) return backupText;
     return startFallback({ ...options, prefix: state.emitted.trim() || options.prefix }).promise;
   }
 }

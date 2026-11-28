@@ -48,7 +48,7 @@ function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-type Stream = { text: string; ttftMs: number; failAfterFirst?: boolean; status?: number };
+type Stream = { text: string; ttftMs: number; failAfterFirst?: boolean; freezeAfterFirst?: boolean; status?: number };
 
 function sseBody(stream: Stream, signal?: AbortSignal): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -60,6 +60,7 @@ function sseBody(stream: Stream, signal?: AbortSignal): ReadableStream<Uint8Arra
           encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: stream.text } }] })}\n\n`)
         );
         if (stream.failAfterFirst) throw new Error("socket hang up");
+        if (stream.freezeAfterFirst) await waitOrAbort(60_000, signal);
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
@@ -148,6 +149,19 @@ test("a preferred provider silent or slower than the cutoff is aborted and the f
     assert.deepEqual(firstTokens, [null], "logged as cut off");
     assert.equal(mock.calls.find((c) => c.provider === "primary")?.aborted, true);
   }
+});
+
+test("a finished fallback result is kept when the preferred provider freezes after its first word", async () => {
+  const config = testConfig();
+  const mock = mockProviders({
+    primary: { text: "primeira", ttftMs: 400, freezeAfterFirst: true },
+    fallback: { text: "texto de reserva", ttftMs: 20 },
+  });
+  const done: string[] = [];
+  const out = await hedge(config, { timeoutMs: 800, onFallbackDone: (t) => done.push(t) });
+  assert.equal(out, "texto de reserva");
+  assert.deepEqual(done, ["texto de reserva"], "shown while the preferred provider was silent");
+  assert.equal(mock.count("fallback"), 1, "no second fallback request");
 });
 
 test("preferred HTTP error fails over without waiting for the first-token window", async () => {

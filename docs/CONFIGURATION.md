@@ -190,7 +190,8 @@ this provider:
 
 1. Each request goes to the preferred provider only.
 2. If it has sent no text after `FALLBACK_START_MS`, the same request also goes
-   to the fallback, and the fallback's words are shown as they arrive.
+   to the fallback, and the fallback's text is shown as soon as it arrives:
+   word by word for finals, and as a whole for drafts.
 3. If the preferred provider starts sending text before `PRIMARY_CUTOFF_MS`,
    the fallback request is cancelled and the preferred provider's text replaces
    the fallback's, even if the caption visibly rewrites. Finals are still
@@ -198,7 +199,8 @@ this provider:
 4. At `PRIMARY_CUTOFF_MS`, a preferred provider that has sent no text is
    cancelled and the fallback's caption stays.
 
-A preferred stream that fails after its first word continues on the fallback
+A preferred stream that fails after its first word uses the fallback's result
+if the fallback had already finished, and otherwise continues on the fallback
 from the text already shown.
 A final whose attempts all failed gets one more fallback attempt, which must
 start streaming within 1.5 seconds, before the source text is shown. With `FINAL_API_KEY` set, finals wait for that provider's

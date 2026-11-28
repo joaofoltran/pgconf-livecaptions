@@ -261,7 +261,7 @@ test("at DRAFT_INTERVAL_MS=100 a silent primary is cut off without opening the b
         assert.ok(firstDraft, "no draft reached the overlay");
         const firstDraftMs = firstDraft.at - startedAt;
         console.log(`DRAFT first caption after primary stall: ${firstDraftMs} ms`);
-        assert.ok(firstDraftMs < 2500, `first draft took ${firstDraftMs} ms`);
+        assert.ok(firstDraftMs < 1200, `first draft took ${firstDraftMs} ms, waiting for the cutoff`);
         assert.doesNotMatch(app.log(), /degraded/, "a cutoff is not an error");
         assert.ok(upstream.stats.maxOpen <= 8, `opened ${upstream.stats.maxOpen} concurrent streams`);
       } finally {
@@ -319,9 +319,24 @@ test("a primary slower than the fallback start but before the cutoff serves draf
       app.sayFinal("alpha beta gamma delta epsilon zeta");
       await waitFor("final", () => app.captions.some((c) => c.final), 4000);
       assert.ok(upstream.stats.fallback > 0, "the fallback started");
-      assert.deepEqual(new Set(app.captions.map(producer)), new Set(["primary"]));
+      assert.equal(producer(app.captions.find((c) => c.final)!), "primary");
       assert.doesNotMatch(app.log(), /no first token|degraded/);
       assert.match(app.log(), /first token room-1 draft primary-model \d+ ms/);
+    }
+  );
+});
+
+test("a draft shows the fallback's text, then the primary's if it starts before the cutoff", async () => {
+  await scenario(
+    (req) => (req.provider === "primary" ? { ttftMs: 800, doneMs: 820 } : { ttftMs: 20, doneMs: 40 }),
+    {},
+    async (app) => {
+      const startedAt = Date.now();
+      app.send({ type: "interim", text: "alpha beta gamma" });
+      await waitFor("swap", () => app.captions.some((c) => producer(c) === "primary"), 3000);
+      assert.deepEqual(app.captions.map(producer), ["fallback", "primary"]);
+      assert.equal(app.captions[0].seq, app.captions[1].seq);
+      assert.ok(app.captions[0].at - startedAt < 800, "the fallback's draft showed before the primary started");
     }
   );
 });

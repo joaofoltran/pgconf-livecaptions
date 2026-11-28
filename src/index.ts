@@ -28,6 +28,7 @@ import {
   isRateLimited,
   primaryProvider,
   translateWithHedge,
+  type HedgeOptions,
   type Provider,
   type TranslateOptions,
 } from "./translate.js";
@@ -63,7 +64,7 @@ function hedgedTranslate(
   timeoutMs: number,
   text: string,
   direction: Direction,
-  options: TranslateOptions
+  options: TranslateOptions & Pick<HedgeOptions, "onFallbackDone">
 ): Promise<string> {
   const fallback = config.fallback;
   const breaker = fallback ? breakerFor(preferred) : null;
@@ -657,6 +658,36 @@ function fireDraft(room: Room): void {
   const prefix = room.lockedPrefix;
   const inFlight = { source: candidate, promise: Promise.resolve(""), gotToken: false, startedAt, awaited: false };
 
+  const render = (translated: string): boolean => {
+    if (sentence !== room.sentence || seq <= room.lastDraftSeq) return false;
+
+    const previous = room.lastDraft?.translated ?? null;
+    // Flush took ownership of the sentence after this draft started: do not render it.
+    if (prefix !== room.lockedPrefix && !startsWithWords(translated, room.lockedPrefix)) return false;
+    if (prefix && !startsWithWords(translated, prefix)) {
+      console.warn(`draft ignorou o prefixo travado ${room.id}`);
+    }
+    // A shrinking draft removes words from the display; another arrives momentarily.
+    if (previous && words(translated).length < words(previous).length - 1) return false;
+
+    room.lastDraftSeq = seq;
+    room.lastDraft = { source: candidate, translated };
+    advanceLock(room, previous, translated);
+    emitCaption(room, seq, {
+      type: "caption",
+      seq,
+      original: candidate,
+      translated,
+      direction,
+      final: false,
+    });
+    return true;
+  };
+  // The fallback's draft shows while the primary may still start before its cutoff.
+  // If it does, its draft replaces the fallback's as if that one never showed.
+  let fallbackShown: { text: string; lastDraft: Room["lastDraft"]; lastDraftSeq: number; lockedPrefix: string } | null =
+    null;
+
   const promise = hedgedTranslate(room, "draft", primaryProvider(config), DRAFT_TIMEOUT_MS, candidate, direction, {
     context,
     unfinished: true,
@@ -664,6 +695,11 @@ function fireDraft(room: Room): void {
     prefix,
     onPartial: () => {
       inFlight.gotToken = true;
+    },
+    onFallbackDone: (text) => {
+      const before = { lastDraft: room.lastDraft, lastDraftSeq: room.lastDraftSeq, lockedPrefix: room.lockedPrefix };
+      const translated = capitalizeFirst(text);
+      if (render(translated)) fallbackShown = { text: translated, ...before };
     },
   }).then(capitalizeFirst);
   inFlight.promise = promise;
@@ -675,28 +711,15 @@ function fireDraft(room: Room): void {
     .then((translated) => {
       const took = Date.now() - startedAt;
       if (took > SLOW_WARN_MS) console.warn(`draft lento ${room.id}: ${took} ms`);
-      if (sentence !== room.sentence || seq <= room.lastDraftSeq) return;
-
-      const previous = room.lastDraft?.translated ?? null;
-      // Flush took ownership of the sentence after this draft started: do not render it.
-      if (prefix !== room.lockedPrefix && !startsWithWords(translated, room.lockedPrefix)) return;
-      if (prefix && !startsWithWords(translated, prefix)) {
-        console.warn(`draft ignorou o prefixo travado ${room.id}`);
+      if (fallbackShown) {
+        if (translated === fallbackShown.text) return;
+        if (sentence === room.sentence && room.lastDraftSeq === seq) {
+          room.lastDraft = fallbackShown.lastDraft;
+          room.lastDraftSeq = fallbackShown.lastDraftSeq;
+          room.lockedPrefix = fallbackShown.lockedPrefix;
+        }
       }
-      // A shrinking draft removes words from the display; another arrives momentarily.
-      if (previous && words(translated).length < words(previous).length - 1) return;
-
-      room.lastDraftSeq = seq;
-      room.lastDraft = { source: candidate, translated };
-      advanceLock(room, previous, translated);
-      emitCaption(room, seq, {
-        type: "caption",
-        seq,
-        original: candidate,
-        translated,
-        direction,
-        final: false,
-      });
+      render(translated);
     })
     .catch((err) => {
       if (abort.signal.aborted) return;
