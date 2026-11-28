@@ -288,7 +288,7 @@ test("a final still translating when the room is reset never reaches the new ses
     // The first sentence's primary hangs; the fallback answers after the reset.
     (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 900, doneMs: 1200 }) : { ttftMs: 20 }),
     { LIVE_DRAFTS: "false" },
-    async (app) => {
+    async (app, upstream) => {
       app.sayFinal(sentence);
       await new Promise((resolve) => setTimeout(resolve, 300));
       app.sayFinal("Okay.");
@@ -299,9 +299,15 @@ test("a final still translating when the room is reset never reaches the new ses
       await waitFor("the first final after the reset", () => app.captions.some((c) => c.final), 3000);
       const firstAfter = app.captions.find((c) => c.final)!.at - resetAt;
       assert.ok(firstAfter < 400, `the first final after the reset waited ${firstAfter} ms for the old ones`);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), ["five six seven."]);
-      assert.deepEqual((await app.transcript()).map((l) => l.original), ["five six seven."]);
+      await waitFor("the old sentences to settle", () => upstream.stats.requests.some((r) => r.source === sentence && r.completed), 3000);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      app.sayFinal("eight nine ten.");
+      await waitFor("the second final after the reset", () => app.captions.filter((c) => c.final).length === 2, 3000);
+      const after = ["five six seven.", "eight nine ten."];
+      assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), after);
+      assert.deepEqual((await app.transcript()).map((l) => l.original), after);
+      const context = upstream.stats.requests.find((r) => r.source === "eight nine ten.")?.context;
+      assert.equal(context, "five six seven.", "the context is the last sentence of the new session");
     }
   );
 });

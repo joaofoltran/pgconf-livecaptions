@@ -1008,6 +1008,8 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     room.finalsWaiting++;
     try {
       await previousFinal;
+      // /reset replaced the transcript and cleared the context: this sentence belongs to the old session.
+      if (room.transcript !== transcript) return;
       // Set after the wait, so the next sentence's context is the last one spoken, not the last to finish.
       if (isTranslated) {
         room.lastSource = original;
