@@ -70,6 +70,14 @@ test("loadConfig rejects term-stats rooms that are not configured", () => {
   assert.deepEqual(loadConfig().termStatsRooms, ["room-1"]);
 });
 
+test("an empty integer setting means its default, not zero", () => {
+  process.env.ROOM_SAMPLE_MAX_LINES = "";
+  assert.equal(loadConfig().roomSampleMaxLines, 50);
+
+  process.env.ROOM_SAMPLE_MAX_LINES = "0";
+  assert.equal(loadConfig().roomSampleMaxLines, 0);
+});
+
 test("loadConfig rejects duplicate and malformed room slugs", () => {
   process.env.ROOMS = "room-1,room-1";
   assert.throws(() => loadConfig(), /Duplicate room slug/);
