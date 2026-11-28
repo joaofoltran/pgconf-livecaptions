@@ -926,6 +926,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     // Stream the final word by word onto an empty live line. Over a visible draft,
     // the final replaces it in one step: its first partials would erase the draft.
     const onPartial = (partial: string) => {
+      if (room.epoch !== epoch) return;
       if (room.renderedSeq !== seq && room.renderedSeq > room.renderedFinalSeq) return;
       emitCaption(room, seq, {
         type: "caption",

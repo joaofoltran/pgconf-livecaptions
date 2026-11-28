@@ -285,26 +285,30 @@ test("a final held on screen is not shown after a reset or a capture disconnect,
 test("a final still translating when the room is reset never reaches the new session", async () => {
   const sentence = "one two three four.";
   await scenario(
-    // The first sentence's primary hangs; the fallback answers after the reset.
-    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 900, doneMs: 1200 }) : { ttftMs: 20 }),
+    // The first sentence's primary hangs; the fallback starts streaming after the reset
+    // (at about 1.4 s) and finishes at about 3 s.
+    (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 900, doneMs: 2500 }) : { ttftMs: 20 }),
     { LIVE_DRAFTS: "false" },
     async (app, upstream) => {
       app.sayFinal(sentence);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      app.sayFinal("Okay.");
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 800));
       await app.reset();
       const resetAt = Date.now();
+      // Past the old sentence's first fallback words, which must not flash on the cleared overlay.
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const saidAt = Date.now();
       app.sayFinal("five six seven.");
       await waitFor("the first final after the reset", () => app.captions.some((c) => c.final), 3000);
-      const firstAfter = app.captions.find((c) => c.final)!.at - resetAt;
-      assert.ok(firstAfter < 400, `the first final after the reset waited ${firstAfter} ms for the old ones`);
-      await waitFor("the old sentences to settle", () => upstream.stats.requests.some((r) => r.source === sentence && r.completed), 3000);
+      const firstAfter = app.captions.find((c) => c.final)!.at - saidAt;
+      assert.ok(firstAfter < 400, `the first final after the reset waited ${firstAfter} ms for the old one`);
+      await waitFor("the old sentence to settle", () => upstream.stats.requests.some((r) => r.source === sentence && r.completed), 4000);
       await new Promise((resolve) => setTimeout(resolve, 300));
       app.sayFinal("eight nine ten.");
       await waitFor("the second final after the reset", () => app.captions.filter((c) => c.final).length === 2, 3000);
       const after = ["five six seven.", "eight nine ten."];
       assert.deepEqual(app.captions.filter((c) => c.final).map((c) => c.original), after);
+      const shownAfterReset = app.captions.filter((c) => c.at >= resetAt).map((c) => c.original);
+      assert.deepEqual([...new Set(shownAfterReset)], after, "no words from before the reset");
       assert.deepEqual((await app.transcript()).map((l) => l.original), after);
       const context = upstream.stats.requests.find((r) => r.source === "eight nine ten.")?.context;
       assert.equal(context, "five six seven.", "the context is the last sentence of the new session");
