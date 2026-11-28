@@ -272,6 +272,10 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", (ws, req) => {
+  ws.on("error", (err) => {
+    console.error("ws error", room?.id, err);
+  });
+
   const url = new URL(req.url ?? "", "http://localhost");
   const room = getRoom(url.searchParams.get("room") ?? undefined);
   const token = url.searchParams.get("k") ?? "";
@@ -329,10 +333,6 @@ wss.on("connection", (ws, req) => {
       }
     });
   }
-
-  ws.on("error", (err) => {
-    console.error("ws error", room.id, err);
-  });
 });
 
 function parseDirection(value: unknown): Direction {
