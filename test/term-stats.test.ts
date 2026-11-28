@@ -177,6 +177,26 @@ test("the text export keeps each sample line on one line", () => {
   assert.equal(text.match(/^# Terms/gm)?.length, 1);
 });
 
+test("a failing room does not delay other rooms' writes", (t) => {
+  t.mock.method(console, "error", () => {});
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const dir = tempDir();
+  const stats = open(dir, { enabledRooms: ["room-1", "room-2"], flushMs: 100 });
+  const sampleOf = (room: string) =>
+    JSON.parse(fs.readFileSync(path.join(dir, `${room}.json`), "utf8")).sample;
+  fs.mkdirSync(path.join(dir, "room-1.json.tmp"));
+
+  stats.record("room-1", "Logical replication.");
+  stats.record("room-2", "Vacuum.");
+  t.mock.timers.tick(100);
+  assert.deepEqual(sampleOf("room-2"), ["Vacuum."]);
+
+  stats.record("room-2", "Autovacuum.");
+  t.mock.timers.tick(100);
+  assert.deepEqual(sampleOf("room-2"), ["Vacuum.", "Autovacuum."]);
+  assert.equal(fs.existsSync(path.join(dir, "room-1.json")), false);
+});
+
 test("stored data survives a restart, exports, and clears", () => {
   const dir = tempDir();
   const before = open(dir);

@@ -103,7 +103,8 @@ Files are mode `600` in a mode `700` directory. Writes are batched every
 the new complete file. A leftover `.tmp` file (from a crash or a failed write)
 is removed on the next start and by clearing the room. If a write fails (disk
 full, permissions), the error is logged, the data stays in memory, and the write
-is retried after 10, 20, 40 and then every 60 seconds until it succeeds. The app also writes pending counts
+is retried after 10, 20, 40 and then every 60 seconds until it succeeds. Other
+rooms keep their normal 5-second writes meanwhile. The app also writes pending counts
 when it receives `SIGTERM` (`docker compose stop`, `up --force-recreate`,
 `./deploy.sh`). If that final write fails, it logs
 `term stats: final write failed on shutdown` and exits with status 1. After a

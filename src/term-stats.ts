@@ -104,11 +104,16 @@ export type TermStatsOptions = {
 // (temporary file + rename) so a crash leaves the previous file intact.
 export class TermStats {
   private readonly cache = new Map<string, RoomStats>();
+  // Rooms with new data, written by the next batch.
   private readonly dirty = new Set<string>();
+  // Rooms whose last write failed. They retry on their own backoff timer, so
+  // a failing room never delays the batch for healthy rooms.
+  private readonly failing = new Set<string>();
   // Rooms whose file could not be read, with the reason. Collection pauses
   // for them until the room is cleared or the app restarts.
   private readonly unreadable = new Map<string, string>();
-  private timer: NodeJS.Timeout | null = null;
+  private batchTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
   private retryMs: number;
   private readonly dir: string;
   private readonly enabledRooms: ReadonlySet<string>;
@@ -161,7 +166,12 @@ export class TermStats {
 
   hasStoredData(room: string): boolean {
     const file = this.file(room);
-    return this.dirty.has(room) || fs.existsSync(file) || fs.existsSync(`${file}.tmp`);
+    return (
+      this.dirty.has(room) ||
+      this.failing.has(room) ||
+      fs.existsSync(file) ||
+      fs.existsSync(`${file}.tmp`)
+    );
   }
 
   record(room: string, text: string): void {
@@ -192,6 +202,7 @@ export class TermStats {
   clear(room: string): void {
     this.cache.delete(room);
     this.dirty.delete(room);
+    this.failing.delete(room);
     this.unreadable.delete(room);
     const file = this.file(room);
     fs.rmSync(file, { force: true });
@@ -199,42 +210,64 @@ export class TermStats {
     this.syncDir();
   }
 
+  // Writes every room with unsaved data now, including failing ones.
   // Returns false when some room's data could not be written.
   flush(): boolean {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
+    for (const timer of [this.batchTimer, this.retryTimer]) if (timer) clearTimeout(timer);
+    this.batchTimer = null;
+    this.retryTimer = null;
+    for (const room of this.failing) this.dirty.add(room);
+    this.failing.clear();
+    this.writeBatch();
+    return this.failing.size === 0;
+  }
+
+  private writeBatch(): void {
+    this.batchTimer = null;
     for (const room of this.dirty) {
-      const stats = this.cache.get(room);
-      if (!stats) {
-        this.dirty.delete(room);
-        continue;
-      }
-      const file = this.file(room);
-      const tmp = `${file}.tmp`;
-      try {
-        fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-        const body = { terms: Object.fromEntries(stats.terms), sample: stats.sample };
-        // flush: fsync before the rename, so a crash cannot leave a renamed
-        // but empty or cut-off file.
-        fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600, flush: true });
-        fs.renameSync(tmp, file);
-        this.syncDir();
-        this.dirty.delete(room);
-      } catch (err) {
-        console.error(`term stats write failed ${room}`, err);
-        this.remove(tmp);
-      }
+      this.dirty.delete(room);
+      if (!this.write(room)) this.failing.add(room);
     }
-    if (this.dirty.size === 0) {
+    this.afterWrites();
+  }
+
+  private retryFailing(): void {
+    this.retryTimer = null;
+    for (const room of this.failing) if (this.write(room)) this.failing.delete(room);
+    this.afterWrites();
+  }
+
+  // Unsaved data stays in memory; keep retrying, backing off to once a minute.
+  private afterWrites(): void {
+    if (this.failing.size === 0) {
       this.retryMs = this.flushMs;
-      return true;
+      return;
     }
-    // Unsaved data stays in memory; keep retrying, backing off to once a minute.
+    if (this.retryTimer) return;
     this.retryMs = Math.min(this.retryMs * 2, MAX_RETRY_MS);
-    this.schedule(this.retryMs);
-    return false;
+    this.retryTimer = setTimeout(() => this.retryFailing(), this.retryMs);
+    this.retryTimer.unref();
+  }
+
+  private write(room: string): boolean {
+    const stats = this.cache.get(room);
+    if (!stats) return true;
+    const file = this.file(room);
+    const tmp = `${file}.tmp`;
+    try {
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const body = { terms: Object.fromEntries(stats.terms), sample: stats.sample };
+      // flush: fsync before the rename, so a crash cannot leave a renamed
+      // but empty or cut-off file.
+      fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600, flush: true });
+      fs.renameSync(tmp, file);
+      this.syncDir();
+      return true;
+    } catch (err) {
+      console.error(`term stats write failed ${room}`, err);
+      this.remove(tmp);
+      return false;
+    }
   }
 
   private file(room: string): string {
@@ -277,14 +310,12 @@ export class TermStats {
   }
 
   private markDirty(room: string): void {
+    // A failing room's next retry writes its latest data.
+    if (this.failing.has(room)) return;
     this.dirty.add(room);
-    this.schedule(this.flushMs);
-  }
-
-  private schedule(ms: number): void {
-    if (this.timer) return;
-    this.timer = setTimeout(() => this.flush(), ms);
-    this.timer.unref();
+    if (this.batchTimer) return;
+    this.batchTimer = setTimeout(() => this.writeBatch(), this.flushMs);
+    this.batchTimer.unref();
   }
 
   // Drops the lowest counts (oldest first among ties) to 90% of the cap, so
