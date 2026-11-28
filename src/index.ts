@@ -510,6 +510,7 @@ function openDeepgram(room: Room): void {
   );
   const dg = new WebSocket(url, {
     headers: { Authorization: `Token ${config.deepgramApiKey}` },
+    maxPayload: 1024 * 1024,
   });
   room.dg = dg;
   room.dgLastMsg = Date.now();
