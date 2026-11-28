@@ -11,7 +11,7 @@ import {
   requireAdmin,
   requireSameOrigin,
 } from "./auth.js";
-import { DRAFT_TIMEOUT_MS, loadConfig, timingSafeEqual, type Direction } from "./config.js";
+import { DRAFT_TIMEOUT_MS, FALLBACK_TIMEOUT_MS, loadConfig, timingSafeEqual, type Direction } from "./config.js";
 import { deepgramListenUrl, grantDeepgramToken } from "./deepgram.js";
 import {
   broadcastOverlays,
@@ -36,7 +36,6 @@ import {
 // A provider that stalls without an error freezes the display: in-flight drafts
 // occupy the queue and the final waits indefinitely. Short timeouts restore control.
 const FINAL_TIMEOUT_MS = 3500;
-const FALLBACK_TIMEOUT_MS = 6000;
 const FINAL_RETRY_FIRST_TOKEN_MS = 1500;
 const SLOW_WARN_MS = 1500;
 // More finished sentences than this waiting to be shown skip the minimum display

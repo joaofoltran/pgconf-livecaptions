@@ -67,6 +67,8 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
 
 // A draft request with no answer by then is aborted as stuck.
 export const DRAFT_TIMEOUT_MS = 3000;
+// The longest a single provider attempt can run: a FINAL_* provider's final, or a fallback.
+export const FALLBACK_TIMEOUT_MS = 6000;
 
 // With a fallback: it starts if the primary has sent no text by FALLBACK_START_MS,
 // and the primary is cancelled if it has sent none by PRIMARY_CUTOFF_MS.
@@ -262,7 +264,9 @@ export function loadConfig() {
     // caption to the fallback for the open time, then one request retries the primary.
     breakerFailureThreshold: integerEnv("BREAKER_FAILURE_THRESHOLD", "4", 1, 100),
     breakerWindowMs: integerEnv("BREAKER_WINDOW_MS", "10000", 1000, 600_000),
-    breakerOpenMs: integerEnv("BREAKER_OPEN_MS", "20000", 1000, 600_000),
+    // Longer than any attempt, so a request started before the breaker opened, or a
+    // finished probe's fallback, settles before the next probe and can't steer it.
+    breakerOpenMs: integerEnv("BREAKER_OPEN_MS", "20000", FALLBACK_TIMEOUT_MS + 1000, 600_000),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
     // Each finished sentence stays on the overlay's top line at least this long.
     minFinalDisplayMs: integerEnv("MIN_FINAL_DISPLAY_MS", "1500", 0, 5000),

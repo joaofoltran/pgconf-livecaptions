@@ -352,15 +352,17 @@ test("after the breaker's open time, one retry goes back to a recovered primary"
   let recovered = false;
   await scenario(
     (req) => (req.provider === "primary" && !recovered ? { hang: true } : { ttftMs: 20 }),
-    { LIVE_DRAFTS: "false", BREAKER_FAILURE_THRESHOLD: "1", BREAKER_OPEN_MS: "1000" },
+    // 7000 is the shortest open time allowed.
+    { LIVE_DRAFTS: "false", BREAKER_FAILURE_THRESHOLD: "1", BREAKER_OPEN_MS: "7000" },
     async (app, upstream) => {
       app.sayFinal("one two three four.");
       await waitFor("breaker to open", () => app.log().includes("degraded"), 3000);
+      const openedAt = Date.now();
       recovered = true;
       app.sayFinal("five six seven.");
       await waitFor("second final", () => app.captions.filter((c) => c.final).length === 2, 3000);
       assert.equal(producer(app.captions.filter((c) => c.final)[1]), "fallback", "still open: straight to the fallback");
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await waitFor("open time to end", () => Date.now() >= openedAt + 7000, 8000);
       for (const text of ["eight nine ten.", "eleven twelve."]) {
         app.sayFinal(text);
         await waitFor(text, () => app.captions.some((c) => c.final && c.original === text), 3000);

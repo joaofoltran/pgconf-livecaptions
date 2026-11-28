@@ -143,6 +143,13 @@ test("loadConfig rejects invalid numeric, boolean, and JSON settings", () => {
   assert.throws(() => loadConfig(), /BREAKER_FAILURE_THRESHOLD must be an integer between 1 and 100/);
 
   delete process.env.BREAKER_FAILURE_THRESHOLD;
+  // A 6 s request started before the breaker opened would otherwise settle during the retry.
+  process.env.BREAKER_OPEN_MS = "6000";
+  assert.throws(() => loadConfig(), /BREAKER_OPEN_MS must be an integer between 7000 and 600000/);
+  process.env.BREAKER_OPEN_MS = "7000";
+  assert.equal(loadConfig().breakerOpenMs, 7000);
+
+  delete process.env.BREAKER_OPEN_MS;
   process.env.OPENAI_EXTRA_BODY = "[]";
   assert.throws(() => loadConfig(), /OPENAI_EXTRA_BODY must be a JSON object/);
 });

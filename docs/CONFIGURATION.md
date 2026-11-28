@@ -230,7 +230,7 @@ and requests use their normal timeouts.
 | `PRIMARY_CUTOFF_MS` | `1500` | Milliseconds without any text from the preferred provider before it is cancelled. 50–2999: below the 3000 ms draft timeout, and greater than `FALLBACK_START_MS`. |
 | `BREAKER_FAILURE_THRESHOLD` | `4` | Preferred-provider failures within the window that open the circuit breaker. 1–100. |
 | `BREAKER_WINDOW_MS` | `10000` | Window in milliseconds for counting those failures. 1000–600000. |
-| `BREAKER_OPEN_MS` | `20000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 1000–600000. |
+| `BREAKER_OPEN_MS` | `20000` | Milliseconds every caption goes straight to the fallback once the breaker opens. 7000–600000: longer than the longest request (6 s), so a request that started before the breaker opened can't close or reopen it during the retry. |
 
 The defaults are João's chosen values, not measurements. Measure Cerebras's
 median time to first word from the venue with `measure-first-token` (see
