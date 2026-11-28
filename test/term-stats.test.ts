@@ -81,6 +81,20 @@ test("files over the current caps are trimmed on load", () => {
   assert.ok(Object.keys(onDisk.terms).length <= 10);
 });
 
+test("leftover temp files count as stored data and are removed", () => {
+  const dir = tempDir();
+  const tmp = path.join(dir, "room-1.json.tmp");
+  fs.writeFileSync(tmp, '{"terms":{},"sample":["speech left by a crash"]}');
+  const stats = open(dir);
+  assert.equal(fs.existsSync(tmp), false, "removed at start");
+
+  fs.writeFileSync(tmp, '{"terms":{},"sample":["speech left by a failed write"]}');
+  assert.equal(stats.hasStoredData("room-1"), true);
+  stats.clear("room-1");
+  assert.equal(fs.existsSync(tmp), false, "removed by clear");
+  assert.equal(stats.hasStoredData("room-1"), false);
+});
+
 test("stored data survives a restart, exports, and clears", () => {
   const dir = tempDir();
   const before = open(dir);

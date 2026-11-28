@@ -109,6 +109,10 @@ export class TermStats {
     this.sampleMaxLines = options.sampleMaxLines;
     this.maxTerms = options.maxTerms ?? MAX_TERMS;
     this.flushMs = options.flushMs ?? 5000;
+    // A crash mid-write can leave a temp file holding speech text.
+    for (const name of this.listDir()) {
+      if (name.endsWith(".json.tmp")) this.remove(path.join(this.dir, name));
+    }
   }
 
   isEnabled(room: string): boolean {
@@ -116,7 +120,8 @@ export class TermStats {
   }
 
   hasStoredData(room: string): boolean {
-    return this.dirty.has(room) || fs.existsSync(this.file(room));
+    const file = this.file(room);
+    return this.dirty.has(room) || fs.existsSync(file) || fs.existsSync(`${file}.tmp`);
   }
 
   record(room: string, text: string): void {
@@ -147,7 +152,10 @@ export class TermStats {
   clear(room: string): void {
     this.cache.delete(room);
     this.dirty.delete(room);
-    fs.rmSync(this.file(room), { force: true });
+    const file = this.file(room);
+    fs.rmSync(file, { force: true });
+    fs.rmSync(`${file}.tmp`, { force: true });
+    this.syncDir();
   }
 
   flush(): void {
@@ -158,22 +166,61 @@ export class TermStats {
     for (const room of this.dirty) {
       const stats = this.cache.get(room);
       if (!stats) continue;
+      const file = this.file(room);
+      const tmp = `${file}.tmp`;
       try {
         fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-        const file = this.file(room);
-        const tmp = `${file}.tmp`;
         const body = { terms: Object.fromEntries(stats.terms), sample: stats.sample };
-        fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600 });
+        // flush: fsync before the rename, so a crash cannot leave a renamed
+        // but empty or cut-off file.
+        fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600, flush: true });
         fs.renameSync(tmp, file);
+        this.syncDir();
         this.dirty.delete(room);
       } catch (err) {
         console.error(`term stats write failed ${room}`, err);
+        this.remove(tmp);
       }
     }
   }
 
   private file(room: string): string {
     return path.join(this.dir, `${room}.json`);
+  }
+
+  private listDir(): string[] {
+    try {
+      return fs.readdirSync(this.dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`term stats cannot read ${this.dir}`, err);
+      }
+      return [];
+    }
+  }
+
+  private remove(file: string): void {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (err) {
+      console.error(`term stats cannot remove ${file}`, err);
+    }
+  }
+
+  // Makes a rename or delete durable: without it a crash can undo either.
+  private syncDir(): void {
+    let fd: number;
+    try {
+      fd = fs.openSync(this.dir, "r");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   private markDirty(room: string): void {

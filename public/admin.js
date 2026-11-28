@@ -81,9 +81,13 @@ async function loadStatus() {
       clear.textContent = "Apagar termos";
       clear.addEventListener("click", async () => {
         if (!confirm(`Apagar termos e amostra salvos de ${room.id}?`)) return;
-        await fetch(`/admin/api/terms/${encodeURIComponent(room.id)}/clear`, {
-          method: "POST",
-        });
+        const res = await fetch(
+          `/admin/api/terms/${encodeURIComponent(room.id)}/clear`,
+          { method: "POST" },
+        ).catch(() => null);
+        if (!res?.ok) {
+          alert(`Falha ao apagar os termos de ${room.id}. Os dados podem continuar salvos.`);
+        }
         loadStatus();
       });
       terms.appendChild(clear);

@@ -94,7 +94,10 @@ no manual `chown` is needed. `deploy.sh` needs no changes: its
 `docker compose up -d` creates the volume.
 
 Files are mode `600` in a mode `700` directory. Writes are batched every
-5 seconds and replace the file atomically. The app also writes pending counts
+5 seconds. Each write goes to `<room>.json.tmp`, is synced to disk, renamed over
+`<room>.json`, and the directory is synced, so a crash leaves either the old or
+the new complete file. A leftover `.tmp` file (from a crash or a failed write)
+is removed on the next start and by clearing the room. The app also writes pending counts
 when it receives `SIGTERM` (`docker compose stop`, `up --force-recreate`,
 `./deploy.sh`). After a crash or `SIGKILL`, up to the last 5 seconds can be
 lost.
