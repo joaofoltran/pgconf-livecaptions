@@ -258,6 +258,12 @@ The server keeps:
 All of it is in process memory. It is cleared when the app restarts, the
 container is recreated, or the room is reset in the admin dashboard.
 
+The one exception is opt-in [room term statistics](TERM_STATS.md): for rooms
+listed in `TERM_STATS_ROOMS`, term counts and a short speech sample are kept in
+the `app_data` Docker volume. They survive restarts and redeploys, are not
+cleared by a room reset, and are deleted only from the admin dashboard, the
+clear endpoint, or `docker compose down -v`.
+
 Download transcripts from `/admin` before:
 
 - deploying an update;
@@ -338,7 +344,12 @@ The application has no database. Back up:
 
 - `.env` as a secret;
 - `config/` vocabulary customizations;
-- Caddy volumes only if certificate continuity is important.
+- Caddy volumes only if certificate continuity is important;
+- opt-in term statistics, if used, by exporting them from the admin dashboard
+  (see [Room term statistics](TERM_STATS.md#backups)).
+
+Never run `docker compose down -v` unless you mean to delete the term-statistics
+volume along with the Caddy volumes.
 
 Create plaintext backups outside the repository with private permissions:
 

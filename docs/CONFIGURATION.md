@@ -254,6 +254,16 @@ The provider may return interim transcripts less frequently than
 `DRAFT_INTERVAL_MS`; reducing this value cannot make Deepgram emit transcripts
 faster.
 
+## Room term statistics
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TERM_STATS_ROOMS` | empty (off) | Rooms that persist term counts and a short speech sample. Each must be in `ROOMS`. |
+| `ROOM_SAMPLE_MAX_LINES` | `50` | Lines of source speech kept per opted-in room (`0` to `1000`). |
+
+Off unless a room is listed. See [Room term statistics](TERM_STATS.md) for what
+is stored, where, and how to export and clear it.
+
 ## Vocabulary files
 
 All files are UTF-8 text and support blank lines and comments beginning with
@@ -325,4 +335,5 @@ loads them only at startup, so the same restart is required.
 
 Before restarting during an event, use `node scripts/rooms-status.mjs` and
 confirm no room is actively capturing. Current captions and transcripts are
-in-memory and are cleared by a restart.
+in-memory and are cleared by a restart. Opt-in term statistics are kept in the
+`app_data` volume and survive it.

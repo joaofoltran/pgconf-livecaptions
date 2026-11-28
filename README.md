@@ -323,10 +323,16 @@ the latest caption, and transcript size. It can:
 - download a transcript as text
 - clear the in-memory room session
 - show whether each room is actively capturing
+- download or delete a room's opt-in term statistics
 
 Transcripts and current captions are held in memory. Restarting the app or
 recreating its container clears them. Download anything you need before an
 upgrade.
+
+Rooms listed in `TERM_STATS_ROOMS` (off by default) also keep term counts and a
+short speech sample in a Docker volume, to learn each room's vocabulary. See
+[Room term statistics](docs/TERM_STATS.md) for what is stored and how to
+export and clear it.
 
 ## Cost and capacity
 
@@ -394,7 +400,8 @@ For symptoms and recovery procedures, see
 ## Known limitations
 
 - Caption directions are currently limited to English and Portuguese.
-- Application state and transcripts are in memory only.
+- Application state and transcripts are in memory only. Opt-in room term
+  statistics are the only data written to disk.
 - A room accepts one capture client at a time.
 - A single app process owns all rooms; horizontal replicas would not share
   room state.
