@@ -976,17 +976,16 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     }
 
     let translated = original;
+    let isTranslated = false;
     if (reusable) {
       translated = closePunctuation(reusable, original);
-      room.lastSource = original;
-      room.lastTranslation = translated;
+      isTranslated = true;
     } else {
       try {
         translated = capitalizeFirst(
           await translateFinal(room, original, direction, context, onPartial, prefix, !complete)
         );
-        room.lastSource = original;
-        room.lastTranslation = translated;
+        isTranslated = true;
       } catch (err) {
         // Only here does the display show source-language text as a last resort.
         if (isAbortError(err)) console.error(`translate failed ${room.id}: timeout`);
@@ -998,6 +997,11 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
     // Finals go out in sentence order: one that finished early waits for the
     // sentences before it, so a late final is shown instead of being dropped.
     await previousFinal;
+    // Set after the wait, so the next sentence's context is the last one spoken, not the last to finish.
+    if (isTranslated) {
+      room.lastSource = original;
+      room.lastTranslation = translated;
+    }
     const line: CaptionLine = {
       ts: Date.now(),
       original,

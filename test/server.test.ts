@@ -17,7 +17,14 @@ type Plan =
   // freeze: stream the first word, then never finish.
   | { ttftMs: number; doneMs?: number; text?: string; freeze?: boolean };
 type Provider = "primary" | "fallback" | "final";
-type UpstreamRequest = { provider: Provider; source: string; system: string; draft: boolean; completed?: boolean };
+type UpstreamRequest = {
+  provider: Provider;
+  source: string;
+  system: string;
+  draft: boolean;
+  context?: string;
+  completed?: boolean;
+};
 
 async function startUpstream(plan: (req: UpstreamRequest) => Plan) {
   const stats = { primary: 0, fallback: 0, final: 0, open: 0, maxOpen: 0, requests: [] as UpstreamRequest[] };
@@ -32,6 +39,7 @@ async function startUpstream(plan: (req: UpstreamRequest) => Plan) {
         source: body.messages.at(-1)?.content ?? "",
         system,
         draft: system.includes("mid-sentence"),
+        context: body.messages.length > 2 ? body.messages[1].content : undefined,
       };
       stats.requests.push(info);
       stats[info.provider]++;
@@ -205,13 +213,13 @@ test("a short remark right after a sentence does not drop that sentence's final"
   );
 });
 
-test("a remark that finishes first does not drop the slower final before it", async () => {
+test("a remark that finishes first does not drop the slower final before it, and is the next sentence's context", async () => {
   const sentence = "one two three four.";
   await scenario(
     // The sentence waits for the silent primary's cutoff even though the fallback has finished.
     (req) => (req.source === sentence ? (req.provider === "primary" ? { hang: true } : { ttftMs: 20, doneMs: 40 }) : { ttftMs: 20 }),
     { LIVE_DRAFTS: "false" },
-    async (app) => {
+    async (app, upstream) => {
       app.sayFinal(sentence);
       await new Promise((resolve) => setTimeout(resolve, 300));
       app.sayFinal("Okay.");
@@ -219,6 +227,10 @@ test("a remark that finishes first does not drop the slower final before it", as
       const finals = app.captions.filter((c) => c.final);
       assert.deepEqual(finals.map((c) => c.original), [sentence, "Okay."]);
       assert.equal(producer(finals[0]), "fallback");
+      app.sayFinal("five six seven.");
+      await waitFor("third final", () => app.captions.filter((c) => c.final).length === 3, 4000);
+      const third = upstream.stats.requests.find((r) => r.source === "five six seven.");
+      assert.equal(third?.context, "Okay.", "context is the sentence spoken just before");
     }
   );
 });
