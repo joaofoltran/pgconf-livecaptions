@@ -418,6 +418,28 @@ These are design observations, not current provider benchmarks. Models,
 regions, service tiers, quotas, and routing change. Measure from your own venue
 and account shortly before the event.
 
+### Measuring first-token latency
+
+The hedge starts the fallback at `PRIMARY_MEDIAN_FIRST_TOKEN_MS` (default
+250 ms) and cuts the primary off at the median x `PRIMARY_CUTOFF_MULTIPLIER`
+(default 2, so 500 ms). These defaults are João's chosen values, not measured
+ones.
+Two ways to measure the primary's real median and p90:
+
+```bash
+# Live: N sample captions (default 20) against the configured primary, using .env.
+# It spends provider quota, so run it outside live sessions.
+docker compose exec app node dist/measure-first-token.js 30
+
+# From production logs: every translation logs its primary's time to first word.
+docker compose logs --no-color app | docker compose exec -T app node dist/measure-first-token.js --from-logs
+```
+
+Both print `n`, `median`, `p90`, and how many requests were cut off. The log
+lines look like `first token room-1 draft gpt-oss-120b 231 ms` or
+`... >500 ms (cut off)`; cut-off requests count as slower than any measured one.
+Set `PRIMARY_MEDIAN_FIRST_TOKEN_MS` to the measured median, then redeploy.
+
 ## Incident response
 
 ### Captions stop in one room
@@ -444,7 +466,9 @@ and account shortly before the event.
 1. Compare WebSocket RTT and end-to-final latency with the latency script.
 2. Look for timeout, `no first token`, `degraded` (circuit breaker), fallback,
    and rate-limit log entries.
-3. If `no first token` appears on healthy traffic, raise `FIRST_TOKEN_MS` slightly.
+3. If `no first token` appears on healthy traffic, measure the primary's
+   median (see "Measuring first-token latency") and raise
+   `PRIMARY_MEDIAN_FIRST_TOKEN_MS` or `PRIMARY_CUTOFF_MULTIPLIER`.
 4. Lower `DRAFTS_PER_SECOND`.
 5. Increase `DRAFT_INTERVAL_MS`.
 6. Temporarily set `LIVE_DRAFTS=false` if final captions remain healthy.
