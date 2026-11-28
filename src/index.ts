@@ -313,7 +313,8 @@ app.use((_req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+// Capture audio frames are about 1.4 KB and JSON messages far smaller.
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 64 * 1024 });
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url ?? "", "http://localhost");
@@ -394,6 +395,13 @@ const GLOBAL_DRAFT_SPACING_MS = Math.round(1000 / Math.max(1, config.draftsPerSe
 // Shared spacing across rooms to stay within the account's request-per-minute limit.
 let lastGlobalDraftTs = 0;
 
+// A caption is a sentence or two; longer text means a broken or hostile client.
+const MAX_CAPTION_TEXT_CHARS = 2000;
+
+function captionText(value: unknown): string | null {
+  return typeof value === "string" && value.length <= MAX_CAPTION_TEXT_CHARS ? value : null;
+}
+
 async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Promise<void> {
   let msg: Record<string, unknown>;
   try {
@@ -401,6 +409,9 @@ async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Pro
   } catch {
     return;
   }
+  // "null" or "5" parse fine; reading .type on them would reject this
+  // unawaited promise and crash the process.
+  if (!msg || typeof msg !== "object") return;
 
   if (msg.type === "ping") {
     sendJson(ws, { type: "pong" });
@@ -429,13 +440,17 @@ async function handleCaptureMessage(room: Room, ws: WebSocket, raw: string): Pro
   }
 
   if (msg.type === "interim") {
+    const interim = captionText(msg.text);
+    if (interim === null) return;
     room.direction = parseDirection(msg.direction ?? room.direction);
-    maybeDraft(room, fixTranscript(String(msg.text ?? "")));
+    maybeDraft(room, fixTranscript(interim));
     return;
   }
 
   if (msg.type !== "caption") return;
-  const text = fixTranscript(String(msg.text ?? "").trim());
+  const caption = captionText(msg.text);
+  if (caption === null) return;
+  const text = fixTranscript(caption.trim());
   if (!text) return;
   if (!msg.final) return;
   room.direction = parseDirection(msg.direction ?? room.direction);
