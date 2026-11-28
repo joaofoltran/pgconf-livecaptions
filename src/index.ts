@@ -68,12 +68,15 @@ function hedgedTranslate(
   const fallback = config.fallback;
   const breaker = fallback ? breakerFor(preferred) : null;
   const route = breaker?.route() ?? "preferred";
+  // A FINAL_* provider is chosen for quality, not speed: give it its whole timeout.
+  const quality = preferred === config.finalProvider;
+  const cutoffMs = quality ? timeoutMs : config.primaryCutoffMs;
   const promise = translateWithHedge(config, text, direction, {
     ...options,
     provider: preferred,
     fallback,
-    // A FINAL_* provider is chosen for quality, not speed: give it its whole timeout.
-    firstTokenMs: preferred === config.finalProvider ? timeoutMs : config.firstTokenMs,
+    fallbackAfterMs: quality ? timeoutMs : config.primaryMedianFirstTokenMs,
+    cutoffMs,
     timeoutMs,
     fallbackTimeoutMs: FALLBACK_TIMEOUT_MS,
     skipPreferred: route === "fallback",
@@ -91,6 +94,9 @@ function hedgedTranslate(
       }
     },
     onPreferredSuccess: () => breaker?.succeed(),
+    // Read by `measure-first-token --from-logs` to compute the median and p90.
+    onPreferredFirstToken: (ms) =>
+      console.log(`first token ${room.id} ${kind} ${preferred.model} ${ms === null ? `>${cutoffMs} ms (cut off)` : `${ms} ms`}`),
   });
   if (route === "probe") {
     void promise.catch(() => {}).finally(() => breaker?.release());
@@ -829,7 +835,8 @@ async function translateFinal(
             onPartial?.(partial);
           },
           fallback: config.fallback,
-          firstTokenMs: config.firstTokenMs,
+          fallbackAfterMs: 0,
+          cutoffMs: 0,
           timeoutMs: FALLBACK_TIMEOUT_MS,
           skipPreferred: true,
         });
@@ -921,7 +928,7 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   if (matching) {
     const [abort, draft] = matching;
     draft.awaited = true;
-    const budget = config.firstTokenMs + 1500;
+    const budget = config.primaryCutoffMs + 1500;
     let timer: NodeJS.Timeout | undefined;
     try {
       // Do not wait for this draft if it is stalled at the provider. One that is

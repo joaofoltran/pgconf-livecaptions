@@ -19,6 +19,8 @@ const managedVariables = [
   "OPENAI_BASE_URL",
   "OPENAI_EXTRA_BODY",
   "PORT",
+  "PRIMARY_CUTOFF_MULTIPLIER",
+  "PRIMARY_MEDIAN_FIRST_TOKEN_MS",
   "ROOMS",
   "SESSION_SECRET",
   "STT_PROXY",
@@ -61,15 +63,26 @@ test("loadConfig accepts a valid minimal environment", () => {
   assert.equal(config.port, 3000);
   assert.equal(config.sttProxy, true);
   assert.equal(config.liveDrafts, true);
-  assert.equal(config.firstTokenMs, 600);
+  assert.equal(config.primaryMedianFirstTokenMs, 250);
+  assert.equal(config.primaryCutoffMs, 500);
 });
 
-test("loadConfig accepts FIRST_TOKEN_MS", () => {
-  process.env.FIRST_TOKEN_MS = "650";
-  assert.equal(loadConfig().firstTokenMs, 650);
+test("the primary cutoff is the median times the multiplier, checked at startup", () => {
+  process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS = "300";
+  process.env.PRIMARY_CUTOFF_MULTIPLIER = "2.5";
+  assert.equal(loadConfig().primaryCutoffMs, 750);
 
-  process.env.FIRST_TOKEN_MS = "10";
-  assert.throws(() => loadConfig(), /FIRST_TOKEN_MS must be an integer/);
+  process.env.PRIMARY_CUTOFF_MULTIPLIER = "0.5";
+  assert.throws(() => loadConfig(), /PRIMARY_CUTOFF_MULTIPLIER must be a number between 1 and 10/);
+
+  process.env.PRIMARY_CUTOFF_MULTIPLIER = "4";
+  process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS = "1000";
+  assert.throws(() => loadConfig(), /must be at most 3000 ms/);
+
+  delete process.env.PRIMARY_CUTOFF_MULTIPLIER;
+  delete process.env.PRIMARY_MEDIAN_FIRST_TOKEN_MS;
+  process.env.FIRST_TOKEN_MS = "600";
+  assert.throws(() => loadConfig(), /FIRST_TOKEN_MS was replaced by PRIMARY_MEDIAN_FIRST_TOKEN_MS/);
 });
 
 test("a fallback key without its base URL and model fails at startup", () => {

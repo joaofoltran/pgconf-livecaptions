@@ -65,6 +65,30 @@ function booleanEnv(name: string, fallback: "true" | "false"): boolean {
   return value === "true";
 }
 
+// With a fallback, it starts when the primary has streamed nothing by its median
+// time to first token, and the primary is cut off at median x multiplier.
+// The defaults are chosen, not measured: see docs/OPERATIONS.md.
+function primaryTiming() {
+  if (process.env.FIRST_TOKEN_MS !== undefined) {
+    throw new Error(
+      "FIRST_TOKEN_MS was replaced by PRIMARY_MEDIAN_FIRST_TOKEN_MS and PRIMARY_CUTOFF_MULTIPLIER; remove it"
+    );
+  }
+  const medianMs = integerEnv("PRIMARY_MEDIAN_FIRST_TOKEN_MS", "250", 50, 3000);
+  const multiplier = Number(env("PRIMARY_CUTOFF_MULTIPLIER", "2"));
+  if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > 10) {
+    throw new Error("PRIMARY_CUTOFF_MULTIPLIER must be a number between 1 and 10");
+  }
+  const cutoffMs = Math.round(medianMs * multiplier);
+  // Past the draft timeout the cutoff could never fire.
+  if (cutoffMs > 3000) {
+    throw new Error(
+      "PRIMARY_MEDIAN_FIRST_TOKEN_MS x PRIMARY_CUTOFF_MULTIPLIER must be at most 3000 ms (the draft timeout)"
+    );
+  }
+  return { primaryMedianFirstTokenMs: medianMs, primaryCutoffMs: cutoffMs };
+}
+
 // No defaults: a key for one provider must never be sent to another provider's URL.
 function fallbackProvider() {
   const apiKey = env("FALLBACK_API_KEY");
@@ -236,8 +260,7 @@ export function loadConfig() {
     // the VPS is close to Deepgram/OpenAI). false = the browser connects directly.
     sttProxy: booleanEnv("STT_PROXY", "true"),
     liveDrafts: booleanEnv("LIVE_DRAFTS", "true"),
-    // With a fallback, start it in parallel if the preferred provider streams no token by then.
-    firstTokenMs: integerEnv("FIRST_TOKEN_MS", "600", 50, 5_000),
+    ...primaryTiming(),
     draftIntervalMs: integerEnv("DRAFT_INTERVAL_MS", "350", 100, 60_000),
     // Global cap across four rooms. Default assumes Tier 2 (5,000 req/min); use 6 on Tier 1.
     draftsPerSecond: integerEnv("DRAFTS_PER_SECOND", "15", 1, 1000),

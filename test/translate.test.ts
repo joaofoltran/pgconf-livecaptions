@@ -24,7 +24,6 @@ function testConfig(): AppConfig {
       model: "fallback-model",
       extraBody: {},
     },
-    firstTokenMs: 600,
   } as AppConfig;
 }
 
@@ -95,7 +94,8 @@ function mockProviders(opts: { primary: Stream | "hang"; fallback?: Stream }) {
 
 const hedge = (config: AppConfig, extra: Partial<Parameters<typeof translateWithHedge>[3]> = {}) =>
   translateWithHedge(config, "hello world", "en-pt", {
-    firstTokenMs: 600,
+    fallbackAfterMs: 250,
+    cutoffMs: 500,
     timeoutMs: 3000,
     fallbackTimeoutMs: 6000,
     fallback: config.fallback,
@@ -109,6 +109,45 @@ test("fast preferred provider never calls fallback", async () => {
   assert.equal(await hedge(config, { onPreferredSuccess: () => successes++ }), "olá mundo");
   assert.equal(mock.count("fallback"), 0);
   assert.equal(successes, 1);
+});
+
+test("a preferred provider slower than the median but before the cutoff replaces the fallback", async () => {
+  const config = testConfig();
+  // The fallback starts at 250 ms and even finishes before the preferred provider streams.
+  const mock = mockProviders({
+    primary: { text: "texto principal", ttftMs: 350 },
+    fallback: { text: "texto de reserva", ttftMs: 20 },
+  });
+  const partials: string[] = [];
+  const failures: string[] = [];
+  const out = await hedge(config, {
+    onPartial: (p) => partials.push(p),
+    onPreferredFailure: (why) => failures.push(why),
+  });
+  assert.equal(out, "texto principal");
+  assert.deepEqual(partials, ["texto de reserva", "texto principal"], "fallback shows, then the swap");
+  assert.deepEqual(failures, []);
+  assert.equal(mock.count("fallback"), 1);
+});
+
+test("a preferred provider silent or slower than the cutoff is aborted and the fallback stays", async () => {
+  for (const primary of ["hang", { text: "tarde demais", ttftMs: 700 }] as const) {
+    const config = testConfig();
+    const mock = mockProviders({ primary, fallback: { text: "texto de reserva", ttftMs: 400 } });
+    const failures: string[] = [];
+    const firstTokens: Array<number | null> = [];
+    const started = Date.now();
+    const out = await hedge(config, {
+      onPreferredFailure: (why) => failures.push(why),
+      onPreferredFirstToken: (ms) => firstTokens.push(ms),
+    });
+    const tookMs = Date.now() - started;
+    assert.equal(out, "texto de reserva");
+    assert.ok(tookMs >= 600 && tookMs < 1200, `fallback at 250 + 400 ms took ${tookMs} ms`);
+    assert.deepEqual(failures, ["no first token"]);
+    assert.deepEqual(firstTokens, [null], "logged as cut off");
+    assert.equal(mock.calls.find((c) => c.provider === "primary")?.aborted, true);
+  }
 });
 
 test("preferred HTTP error fails over without waiting for the first-token window", async () => {
@@ -130,7 +169,11 @@ test("without a fallback, a slow first token is not a timeout", async () => {
   config.fallback = null;
   mockProviders({ primary: { text: "devagar", ttftMs: 250 } });
   const failures: string[] = [];
-  const out = await hedge(config, { firstTokenMs: 50, onPreferredFailure: (why) => failures.push(why) });
+  const out = await hedge(config, {
+    fallbackAfterMs: 50,
+    cutoffMs: 100,
+    onPreferredFailure: (why) => failures.push(why),
+  });
   assert.equal(out, "devagar");
   assert.deepEqual(failures, []);
 });
@@ -172,7 +215,8 @@ test("a preferred timeout is reported even if the caller aborts before the fallb
   setTimeout(() => abort.abort(), 400);
   await assert.rejects(
     hedge(config, {
-      firstTokenMs: 100,
+      fallbackAfterMs: 100,
+      cutoffMs: 1000,
       timeoutMs: 250,
       signal: abort.signal,
       onPreferredFailure: (why) => failures.push(why),
