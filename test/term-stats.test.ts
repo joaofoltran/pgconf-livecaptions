@@ -177,6 +177,26 @@ test("the text export keeps each sample line on one line", () => {
   assert.equal(text.match(/^# Terms/gm)?.length, 1);
 });
 
+test("a write is fsynced before it replaces the file", (t) => {
+  const dir = tempDir();
+  const stats = open(dir);
+  const calls: string[] = [];
+  const { fsyncSync, renameSync } = fs;
+  t.mock.method(fs, "fsyncSync", (fd: number) => {
+    calls.push("fsync");
+    fsyncSync(fd);
+  });
+  t.mock.method(fs, "renameSync", (from: string, to: string) => {
+    calls.push("rename");
+    renameSync(from, to);
+  });
+
+  stats.record("room-1", "Logical replication.");
+  assert.equal(stats.flush(), true);
+  // File, then rename, then the directory.
+  assert.deepEqual(calls, ["fsync", "rename", "fsync"]);
+});
+
 test("a failing room does not delay other rooms' writes", (t) => {
   t.mock.method(console, "error", () => {});
   t.mock.timers.enable({ apis: ["setTimeout"] });

@@ -257,10 +257,16 @@ export class TermStats {
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const body = { terms: Object.fromEntries(stats.terms), sample: stats.sample };
-      // flush: fsync before the rename, so a crash cannot leave a renamed
-      // but empty or cut-off file. Pass no encoding: with encoding "utf8",
-      // Node 22 takes a fast path that skips the fsync without an error.
-      fs.writeFileSync(tmp, JSON.stringify(body), { mode: 0o600, flush: true });
+      const data = Buffer.from(JSON.stringify(body));
+      const fd = fs.openSync(tmp, "w", 0o600);
+      try {
+        for (let offset = 0; offset < data.length; ) offset += fs.writeSync(fd, data, offset);
+        // Before the rename, so a crash cannot leave a renamed but empty or
+        // cut-off file.
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, file);
       this.syncDir();
       return true;
