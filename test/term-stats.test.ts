@@ -72,14 +72,16 @@ test("long lines are cut and long tokens skipped", () => {
 test("files over the current caps are trimmed on load", () => {
   const dir = tempDir();
   const terms = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`term${i}`, i + 1]));
+  terms["y".repeat(500)] = 99;
   const sample = Array.from({ length: 10 }, (_, i) => `line ${i}`);
+  sample[1] = "z".repeat(5000);
   fs.writeFileSync(path.join(dir, "room-1.json"), JSON.stringify({ terms, sample }));
 
   const stats = open(dir, { maxTerms: 10, sampleMaxLines: 3 });
   const snapshot = stats.snapshot("room-1");
   assert.ok(snapshot.terms.length <= 10);
-  assert.equal(snapshot.terms[0].term, "term29");
-  assert.deepEqual(snapshot.sample, ["line 0", "line 1", "line 2"]);
+  assert.equal(snapshot.terms[0].term, "term29", "over-long term dropped");
+  assert.deepEqual(snapshot.sample, ["line 0", "z".repeat(1000), "line 2"]);
 
   stats.flush();
   const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "room-1.json"), "utf8"));
@@ -134,6 +136,15 @@ test("a corrupt file is reported once, never overwritten, and clearable", (t) =>
   assert.equal(stats.loadError("room-1"), null);
   stats.record("room-1", "Logical replication.");
   assert.equal(countOf(stats, "room-1", "logical replication"), 1);
+});
+
+test("a file over the byte limit is not read", (t) => {
+  t.mock.method(console, "error", () => {});
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, "room-1.json"), JSON.stringify({ terms: { wal: 1 }, sample: ["x".repeat(200)] }));
+  const stats = open(dir, { maxFileBytes: 100 });
+
+  assert.match(stats.loadError("room-1") ?? "", /over the 100-byte limit/);
 });
 
 test("failed writes keep the data and retry with backoff", (t) => {

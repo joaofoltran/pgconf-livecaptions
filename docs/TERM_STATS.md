@@ -43,7 +43,11 @@ anything else a speaker says aloud.
   in a full room is usually dropped again soon.
 - When a file is loaded with more terms or sample lines than the current
   limits allow (for example after `ROOM_SAMPLE_MAX_LINES` was lowered), it is
-  trimmed to the limits and rewritten. The sample keeps its first lines.
+  trimmed to the limits and rewritten. The sample keeps its first lines. Terms
+  longer than 97 characters are dropped and sample lines are cut to 1,000
+  characters on load as well.
+- A file over 16 MiB is not read at all; it is reported as unreadable (see
+  below).
 
 Counts are lowercase, so curate casing (`PostgreSQL`, `WAL`) by hand when you
 copy terms into `config/keyterms.txt` or `config/glossary.txt`.

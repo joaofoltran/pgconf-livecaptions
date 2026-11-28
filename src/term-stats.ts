@@ -43,6 +43,12 @@ const NUMBER_LIKE = /^[\p{N}._'-]+$/u;
 const MAX_TOKEN_CHARS = 48;
 // A caption line is a sentence or two; anything longer is cut before counting.
 const MAX_LINE_CHARS = 1000;
+// The longest term extractTerms can produce: two words and a space.
+const MAX_TERM_CHARS = MAX_TOKEN_CHARS * 2 + 1;
+// Above the largest file a full room can produce (about 12 MB with 20,000
+// 97-character terms and 1,000 escaped 1,000-character lines, all non-ASCII);
+// a bigger file is not one this app wrote.
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
 
 // shortcut: a fixed per-room cap; make it a setting if a long event keeps
 // hitting it.
@@ -90,6 +96,7 @@ export type TermStatsOptions = {
   enabledRooms: readonly string[];
   sampleMaxLines: number;
   maxTerms?: number;
+  maxFileBytes?: number;
   flushMs?: number;
 };
 
@@ -107,6 +114,7 @@ export class TermStats {
   private readonly enabledRooms: ReadonlySet<string>;
   private readonly sampleMaxLines: number;
   private readonly maxTerms: number;
+  private readonly maxFileBytes: number;
   private readonly flushMs: number;
 
   constructor(options: TermStatsOptions) {
@@ -114,6 +122,7 @@ export class TermStats {
     this.enabledRooms = new Set(options.enabledRooms);
     this.sampleMaxLines = options.sampleMaxLines;
     this.maxTerms = options.maxTerms ?? MAX_TERMS;
+    this.maxFileBytes = options.maxFileBytes ?? MAX_FILE_BYTES;
     this.flushMs = options.flushMs ?? 5000;
     this.retryMs = this.flushMs;
     const names = this.listDir();
@@ -158,7 +167,7 @@ export class TermStats {
   record(room: string, text: string): void {
     if (!this.enabledRooms.has(room) || this.unreadable.has(room)) return;
     const stats = this.load(room);
-    const line = text.slice(0, MAX_LINE_CHARS).replace(/[\uD800-\uDBFF]$/, "");
+    const line = cutLine(text);
     for (const term of extractTerms(line)) {
       stats.terms.set(term, (stats.terms.get(term) ?? 0) + 1);
     }
@@ -300,6 +309,11 @@ export class TermStats {
     if (failure) throw new Error(failure);
     const file = this.file(room);
     try {
+      // Checked before reading: this runs synchronously at startup.
+      const { size } = fs.statSync(file);
+      if (size > this.maxFileBytes) {
+        throw new Error(`${size} bytes, over the ${this.maxFileBytes}-byte limit`);
+      }
       stats = parseStats(fs.readFileSync(file, "utf8"));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -313,12 +327,26 @@ export class TermStats {
       }
       stats = { terms: new Map(), sample: [] };
     }
-    const cappedTerms = this.enforceCap(stats.terms);
-    const cappedSample = stats.sample.splice(this.sampleMaxLines).length > 0;
+    let trimmed = false;
+    for (const term of stats.terms.keys()) {
+      if (term.length > MAX_TERM_CHARS) {
+        stats.terms.delete(term);
+        trimmed = true;
+      }
+    }
+    if (this.enforceCap(stats.terms)) trimmed = true;
+    if (stats.sample.splice(this.sampleMaxLines).length > 0) trimmed = true;
+    const sample = stats.sample.map(cutLine);
+    if (sample.some((line, i) => line !== stats.sample[i])) trimmed = true;
+    stats.sample = sample;
     this.cache.set(room, stats);
-    if (cappedTerms || cappedSample) this.markDirty(room);
+    if (trimmed) this.markDirty(room);
     return stats;
   }
+}
+
+function cutLine(text: string): string {
+  return text.slice(0, MAX_LINE_CHARS).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 function parseStats(json: string): RoomStats {
