@@ -19,6 +19,7 @@ const managedVariables = [
   "FIRST_TOKEN_MS",
   "FINAL_API_KEY",
   "LIVE_DRAFTS",
+  "MIN_FINAL_DISPLAY_MS",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_EXTRA_BODY",
@@ -160,4 +161,12 @@ test("loadConfig validates provider URLs and trims trailing slashes", () => {
 
   process.env.OPENAI_BASE_URL = "file:///tmp/provider";
   assert.throws(() => loadConfig(), /OPENAI_BASE_URL must use http or https/);
+});
+
+test("an empty MIN_FINAL_DISPLAY_MS means the 1.5 s default, not zero", () => {
+  process.env.MIN_FINAL_DISPLAY_MS = "";
+  assert.equal(loadConfig().minFinalDisplayMs, 1500);
+
+  process.env.MIN_FINAL_DISPLAY_MS = "0";
+  assert.equal(loadConfig().minFinalDisplayMs, 0);
 });

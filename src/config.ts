@@ -48,8 +48,9 @@ function requiredEnv(name: string, minLength = 1): string {
   return value;
 }
 
+// An empty value ("NAME=" in .env) means unset; Number("") would read it as 0.
 function integerEnv(name: string, fallback: string, min: number, max: number): number {
-  const raw = env(name, fallback);
+  const raw = env(name) || fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
     throw new Error(`${name} must be an integer between ${min} and ${max}`);
