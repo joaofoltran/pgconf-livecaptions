@@ -23,6 +23,7 @@ import {
   type CaptionLine,
   type Room,
 } from "./rooms.js";
+import { TermStats, termStatsText } from "./term-stats.js";
 import { isRateLimited, translateCaption } from "./translate.js";
 
 // A provider that stalls without an error freezes the display: in-flight drafts
@@ -68,6 +69,12 @@ const rooms = new Map<string, Room>();
 for (const id of config.rooms) {
   rooms.set(id, createRoom(id, config.tokens[id]));
 }
+// Docker mounts a named volume at /app/data; the rest of the container is read-only.
+const termStats = new TermStats(
+  path.resolve(process.cwd(), "data/term-stats"),
+  new Set(config.termStatsRooms),
+  config.roomSampleMaxLines
+);
 
 function getRoom(id: string | undefined): Room | undefined {
   if (!id) return undefined;
@@ -207,6 +214,8 @@ adminApi.get("/status", (_req, res) => {
       direction: room.direction,
       lastCaption: room.lastCaption,
       transcriptLines: room.transcript.length,
+      termStats: termStats.isEnabled(room.id),
+      termStatsStored: termStats.hasStoredData(room.id),
       captureUrl: `/r/${room.id}?k=${encodeURIComponent(room.token)}`,
       overlayUrl: `/r/${room.id}/overlay?k=${encodeURIComponent(room.token)}`,
     })),
@@ -231,6 +240,34 @@ adminApi.get("/transcript/:room", (req, res) => {
     return;
   }
   res.json({ room: room.id, transcript: room.transcript });
+});
+
+// Works for rooms that have since opted out, so their stored data can still be
+// exported and cleared.
+adminApi.get("/terms/:room", (req, res) => {
+  const room = getRoom(req.params.room);
+  if (!room) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  const snapshot = termStats.snapshot(room.id);
+  if (String(req.query.format ?? "json") === "txt") {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${room.id}-terms.txt"`);
+    res.send(termStatsText(snapshot));
+    return;
+  }
+  res.json(snapshot);
+});
+
+adminApi.post("/terms/:room/clear", requireSameOrigin, (req, res) => {
+  const room = getRoom(String(req.params.room));
+  if (!room) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  termStats.clear(room.id);
+  res.json({ ok: true });
 });
 
 adminApi.post("/reset/:room", requireSameOrigin, (req, res) => {
@@ -902,6 +939,11 @@ async function flushPending(room: Room, ws: WebSocket | null, complete = true): 
   if (room.transcript.length > 2000) {
     room.transcript.splice(0, room.transcript.length - 2000);
   }
+  try {
+    termStats.record(room.id, original);
+  } catch (err) {
+    console.error("term stats failed", room.id, err);
+  }
   emitCaption(room, seq, { type: "caption", seq, ...line });
 }
 
@@ -911,6 +953,14 @@ setInterval(() => {
     broadcastOverlays(room, { type: "ping" });
   }
 }, 15000);
+
+// Docker stops the container with SIGTERM; write batched term counts first.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    termStats.flush();
+    process.exit(0);
+  });
+}
 
 server.listen(config.port, () => {
   console.log(`live-captions listening on ${config.port}`);

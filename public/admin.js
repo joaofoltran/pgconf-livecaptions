@@ -67,6 +67,29 @@ async function loadStatus() {
     });
     card.appendChild(reset);
 
+    if (room.termStats || room.termStatsStored) {
+      const terms = document.createElement("p");
+      terms.append(
+        `Termos: coleta ${room.termStats ? "ligada" : "desligada"} · `,
+      );
+      const termsLink = document.createElement("a");
+      termsLink.href = `/admin/api/terms/${encodeURIComponent(room.id)}?format=txt`;
+      termsLink.textContent = "baixar termos";
+      terms.append(termsLink, " ");
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.textContent = "Apagar termos";
+      clear.addEventListener("click", async () => {
+        if (!confirm(`Apagar termos e amostra salvos de ${room.id}?`)) return;
+        await fetch(`/admin/api/terms/${encodeURIComponent(room.id)}/clear`, {
+          method: "POST",
+        });
+        loadStatus();
+      });
+      terms.appendChild(clear);
+      card.appendChild(terms);
+    }
+
     roomsEl.appendChild(card);
   }
 }
